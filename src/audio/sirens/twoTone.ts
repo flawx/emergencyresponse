@@ -9,7 +9,7 @@ function createFrTwoToneVoice(
   startAt?: number,
   options?: FrVoiceOptions,
 ): { oscA: OscillatorNode; gate: GainNode } | null {
-  const { audioContext: ac, frDebugIsolation, noiseBuffer } = ctx
+  const { audioContext: ac, noiseBuffer } = ctx
   const withDrift = options?.withDrift ?? true
   const withWobble = options?.withWobble ?? true
   const withNoise = options?.withNoise ?? true
@@ -73,8 +73,104 @@ function createFrTwoToneVoice(
   return { oscA, gate }
 }
 
+type SteppedAlternatingSpec = {
+  mode: 'stepped'
+  freqs: number[]
+  /** Durée entre deux changements de fréquence (ms), comme l’ancien `everyMs`. */
+  stepMs: number
+  horizonSteps?: number
+  jitterMax?: number
+  logPrefix: string
+  baseFallback: number
+}
+
+type GatedThreeToneSpec = {
+  mode: 'gatedThreeTone'
+  gate: GainNode
+  noteMs: number
+  /** Pause après les 3 notes (secondes), ex. `1.1`. */
+  extraPauseSec: number
+  attack: number
+  endFade: number
+  horizonCycles?: number
+  /** Gabarit Hz par note ; `nextJitter(instance, 1)` est ajouté à chaque tirage. */
+  toneHz: readonly [number, number, number]
+  logTag: string
+}
+
+type AlternatingTonesSpec = SteppedAlternatingSpec | GatedThreeToneSpec
+
+/**
+ * Planification commune des séquences two-tone FR (pas fixe) et trois tons FR (cycles + gate).
+ * Ne crée pas l’oscillateur : uniquement fréquences / gate sur `osc` (et `gate` en mode trois tons).
+ */
+function scheduleAlternatingTones(
+  ctx: SirenBuildContext,
+  instance: SoundInstance,
+  osc: OscillatorNode,
+  spec: AlternatingTonesSpec,
+): void {
+  const { audioContext: ac, logDebug } = ctx
+
+  if (spec.mode === 'stepped') {
+    const horizonSteps = spec.horizonSteps ?? 600
+    const jitterMax = spec.jitterMax ?? 1
+    const start = ac.currentTime + 0.01
+    const step = spec.stepMs / 1000
+    for (let i = 0; i < horizonSteps; i += 1) {
+      const idx = i % spec.freqs.length
+      const f = clampFrequencyHz(
+        (spec.freqs[idx] ?? spec.freqs[0] ?? spec.baseFallback) + nextJitter(instance, jitterMax),
+      )
+      osc.frequency.setValueAtTime(f, start + i * step)
+      if (i < 8) logDebug(`${spec.logPrefix} step=${i} f=${f.toFixed(2)}Hz t=${(i * step).toFixed(3)}s`)
+    }
+    return
+  }
+
+  const noteMs = spec.noteMs
+  const cycleSec = (noteMs * 3) / 1000 + spec.extraPauseSec
+  const attack = spec.attack
+  const endFade = spec.endFade
+  const horizonCycles = spec.horizonCycles ?? 220
+  const start = ac.currentTime + 0.01
+  const gate = spec.gate
+  const [h1, h2, h3] = spec.toneHz
+
+  for (let i = 0; i < horizonCycles; i += 1) {
+    const cycleStart = start + i * cycleSec
+    const t2 = cycleStart + noteMs / 1000
+    const t3 = cycleStart + (noteMs * 2) / 1000
+    const t4 = cycleStart + (noteMs * 3) / 1000
+    gate.gain.cancelScheduledValues(cycleStart)
+    gate.gain.setValueAtTime(0, cycleStart)
+    const f1 = clampFrequencyHz(h1 + nextJitter(instance, 1))
+    const f2 = clampFrequencyHz(h2 + nextJitter(instance, 1))
+    const f3 = clampFrequencyHz(h3 + nextJitter(instance, 1))
+    osc.frequency.setValueAtTime(f1, cycleStart)
+    osc.frequency.setValueAtTime(f2, t2)
+    osc.frequency.setValueAtTime(f3, t3)
+    osc.frequency.setValueAtTime(f3, t4)
+
+    gate.gain.setValueAtTime(0, cycleStart)
+    gate.gain.linearRampToValueAtTime(1, cycleStart + attack)
+    gate.gain.setValueAtTime(1, t4)
+    gate.gain.linearRampToValueAtTime(0, t4 + endFade)
+
+    const cycleEnd = cycleStart + cycleSec
+    gate.gain.setValueAtTime(0, cycleEnd)
+    if (i < 8 || i % 20 === 0) {
+      logDebug(
+        `[${spec.logTag}] cycle=${i} f=[${f1.toFixed(1)},${f2.toFixed(1)},${f3.toFixed(1)}] fade=${endFade.toFixed(3)}s pause=${(
+          cycleEnd - t4
+        ).toFixed(3)}s`,
+      )
+    }
+  }
+}
+
 export function createThreeToneFr(ctx: SirenBuildContext, instance: SoundInstance): void {
-  const { audioContext: ac, frDebugIsolation, logDebug } = ctx
+  const { frDebugIsolation } = ctx
   instance.debug.modulation = 'three-tone-fr-persistent-voice'
   const voice = createFrTwoToneVoice(ctx, instance, 700, undefined, {
     withDrift: !frDebugIsolation,
@@ -86,42 +182,17 @@ export function createThreeToneFr(ctx: SirenBuildContext, instance: SoundInstanc
   if (!voice) return
   const { oscA, gate } = voice
   instance.mainOsc = oscA
-  const noteMs = 180
-  const cycleSec = (noteMs * 3) / 1000 + 1.1
-  const attack = 0.005
-  const endFade = 0.02
-  const horizonCycles = 220
-  const start = ac.currentTime + 0.01
-  for (let i = 0; i < horizonCycles; i += 1) {
-    const cycleStart = start + i * cycleSec
-    const t2 = cycleStart + noteMs / 1000
-    const t3 = cycleStart + (noteMs * 2) / 1000
-    const t4 = cycleStart + (noteMs * 3) / 1000
-    gate.gain.cancelScheduledValues(cycleStart)
-    gate.gain.setValueAtTime(0, cycleStart)
-    const f1 = clampFrequencyHz(420 + nextJitter(instance, 1))
-    const f2 = clampFrequencyHz(516 + nextJitter(instance, 1))
-    const f3 = clampFrequencyHz(420 + nextJitter(instance, 1))
-    oscA.frequency.setValueAtTime(f1, cycleStart)
-    oscA.frequency.setValueAtTime(f2, t2)
-    oscA.frequency.setValueAtTime(f3, t3)
-    oscA.frequency.setValueAtTime(f3, t4)
-
-    gate.gain.setValueAtTime(0, cycleStart)
-    gate.gain.linearRampToValueAtTime(1, cycleStart + attack)
-    gate.gain.setValueAtTime(1, t4)
-    gate.gain.linearRampToValueAtTime(0, t4 + endFade)
-
-    const cycleEnd = cycleStart + cycleSec
-    gate.gain.setValueAtTime(0, cycleEnd)
-    if (i < 8 || i % 20 === 0) {
-      logDebug(
-        `[three-tone] cycle=${i} f=[${f1.toFixed(1)},${f2.toFixed(1)},${f3.toFixed(1)}] fade=${endFade.toFixed(3)}s pause=${(
-          cycleEnd - t4
-        ).toFixed(3)}s`,
-      )
-    }
-  }
+  scheduleAlternatingTones(ctx, instance, oscA, {
+    mode: 'gatedThreeTone',
+    gate,
+    noteMs: 180,
+    extraPauseSec: 1.1,
+    attack: 0.005,
+    endFade: 0.02,
+    horizonCycles: 220,
+    toneHz: [420, 516, 420],
+    logTag: 'three-tone',
+  })
   instance.debug.frequencyHz = 700
 }
 
@@ -131,7 +202,7 @@ export function createTwoToneFr(
   freqs: number[],
   everyMs: number,
 ): void {
-  const { audioContext: ac, frDebugIsolation, logDebug } = ctx
+  const { frDebugIsolation } = ctx
   const voice = createFrTwoToneVoice(ctx, instance, freqs[0] ?? 700, undefined, {
     withDrift: !frDebugIsolation,
     withWobble: false,
@@ -145,15 +216,13 @@ export function createTwoToneFr(
   instance.debug.frequencyHz = freqs[0] ?? 700
   instance.debug.modulation = 'two-tone-fr'
 
-  const start = ac.currentTime + 0.01
-  const step = everyMs / 1000
-  const horizonSteps = 600
-  for (let i = 0; i < horizonSteps; i += 1) {
-    const idx = i % freqs.length
-    const f = clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 700) + nextJitter(instance, 1))
-    oscA.frequency.setValueAtTime(f, start + i * step)
-    if (i < 8) logDebug(`[two-tone] step=${i} f=${f.toFixed(2)}Hz t=${(i * step).toFixed(3)}s`)
-  }
+  scheduleAlternatingTones(ctx, instance, oscA, {
+    mode: 'stepped',
+    freqs,
+    stepMs: everyMs,
+    logPrefix: '[two-tone]',
+    baseFallback: freqs[0] ?? 700,
+  })
   instance.debug.frequencyHz = freqs[0] ?? 700
 }
 
@@ -165,7 +234,7 @@ export function createPoliceFrTwoTone(
   everyMs: number,
   modulation: string,
 ): void {
-  const { audioContext: ac, frDebugIsolation, logDebug } = ctx
+  const { frDebugIsolation } = ctx
   const voice = createFrTwoToneVoice(ctx, instance, freqs[0] ?? 800, undefined, {
     withDrift: !frDebugIsolation,
     withWobble: false,
@@ -179,14 +248,12 @@ export function createPoliceFrTwoTone(
   instance.debug.frequencyHz = freqs[0] ?? 800
   instance.debug.modulation = modulation
 
-  const start = ac.currentTime + 0.01
-  const step = everyMs / 1000
-  const horizonSteps = 600
-  for (let i = 0; i < horizonSteps; i += 1) {
-    const idx = i % freqs.length
-    const f = clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 800) + nextJitter(instance, 1))
-    oscA.frequency.setValueAtTime(f, start + i * step)
-    if (i < 8) logDebug(`[two-tone-police] step=${i} f=${f.toFixed(2)}Hz t=${(i * step).toFixed(3)}s`)
-  }
+  scheduleAlternatingTones(ctx, instance, oscA, {
+    mode: 'stepped',
+    freqs,
+    stepMs: everyMs,
+    logPrefix: '[two-tone-police]',
+    baseFallback: freqs[0] ?? 800,
+  })
   instance.debug.frequencyHz = freqs[0] ?? 800
 }

@@ -26,7 +26,7 @@ export function createMasterChain(ctx: AudioContext): MasterChain {
   const saturatorInputGain = ctx.createGain()
   saturatorInputGain.gain.value = 1.4
   const saturator = ctx.createWaveShaper()
-  saturator.curve = makeDistortionCurve(11)
+  saturator.curve = new Float32Array(makeDistortionCurve(11))
   saturator.oversample = '4x'
   const compressor = ctx.createDynamicsCompressor()
   compressor.threshold.value = -24

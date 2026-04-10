@@ -17,7 +17,7 @@ export function createPhaser(ctx: SirenBuildContext, instance: SoundInstance): v
   const lfoGain = ac.createGain()
   lfoGain.gain.value = depth
   const lfoShaper = ac.createWaveShaper()
-  lfoShaper.curve = makeWailBiasCurve()
+  lfoShaper.curve = new Float32Array(makeWailBiasCurve())
   lfo.connect(lfoShaper)
   lfoShaper.connect(lfoGain)
   lfoGain.connect(carrier.frequency)

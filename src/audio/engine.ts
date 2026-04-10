@@ -26,7 +26,7 @@ import {
 } from './sirens/twoTone'
 import { createWailUnified } from './sirens/wail'
 import { createYelpUnified } from './sirens/yelp'
-import { buildNoiseBuffer, getDbAtHz, measureRMS } from './utils/audioUtils'
+import { buildNoiseBuffer, getAssetUrl, getDbAtHz, measureRMS } from './utils/audioUtils'
 
 const SAMPLE_EXTENSIONS = ['mp3', 'wav', 'ogg']
 
@@ -77,10 +77,9 @@ class AudioEngine {
 
   private async loadPoliceHornBuffer(): Promise<void> {
     if (!this.context) return
-    const base = (import.meta.env.BASE_URL ?? '/').replace(/\/?$/, '/')
     for (const ext of ['wav', 'mp3'] as const) {
       try {
-        const res = await fetch(`${base}audio/horn-police-us.${ext}`)
+        const res = await fetch(getAssetUrl(`audio/horn-police-us.${ext}`))
         if (!res.ok) continue
         const raw = await res.arrayBuffer()
         this.policeHornBuffer = await this.context.decodeAudioData(raw.slice(0))
@@ -96,10 +95,9 @@ class AudioEngine {
 
   private async loadAirHornBuffer(): Promise<void> {
     if (!this.context) return
-    const base = (import.meta.env.BASE_URL ?? '/').replace(/\/?$/, '/')
     for (const ext of ['wav', 'mp3'] as const) {
       try {
-        const res = await fetch(`${base}audio/horn-fire-us.${ext}`)
+        const res = await fetch(getAssetUrl(`audio/horn-fire-us.${ext}`))
         if (!res.ok) continue
         const raw = await res.arrayBuffer()
         this.airHornBuffer = await this.context.decodeAudioData(raw.slice(0))
@@ -213,7 +211,7 @@ class AudioEngine {
         if (this.samples.has(id)) return
         for (const ext of SAMPLE_EXTENSIONS) {
           try {
-            const response = await fetch(`/sounds/${id}.${ext}`)
+            const response = await fetch(getAssetUrl(`sounds/${id}.${ext}`))
             if (!response.ok) continue
             const arr = await response.arrayBuffer()
             const decoded = await this.context!.decodeAudioData(arr)

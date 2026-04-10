@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, type PointerEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+
+type HoldEvent = PointerEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonElement>
 import { Navigate, useParams } from 'react-router-dom'
 import { ActiveSounds } from '../components/ActiveSounds'
 import { AudioDebugPanel } from '../components/AudioDebugPanel'
@@ -60,15 +62,20 @@ export function SirenControlPage() {
 
   const activeNames = scenario.defs.filter((d) => active[d.id]).map((d) => d.label)
 
-  const onHoldStart = async (soundId: string, e: PointerEvent<HTMLButtonElement>) => {
+  const onHoldStart = async (soundId: string, e: HoldEvent) => {
     const sound = scenario.defs.find((def) => def.id === soundId)
     if (!sound) return
     const target = e.currentTarget
-    const pointerId = e.pointerId
+    const pointerId = 'pointerId' in e ? e.pointerId : undefined
     vibrate([14])
     await startHold(sound, region, emergency)
     if (sound.kind === 'qsiren') qsirenHoldStartedAt.current = Date.now()
-    if (target && typeof target.setPointerCapture === 'function' && target.isConnected) {
+    if (
+      pointerId != null &&
+      target &&
+      typeof target.setPointerCapture === 'function' &&
+      target.isConnected
+    ) {
       try {
         target.setPointerCapture(pointerId)
       } catch {
@@ -113,7 +120,7 @@ export function SirenControlPage() {
                   label="Q-SIREN HOLD"
                   active={isActive}
                   hold
-                  onHoldStart={(e) => {
+                  onHoldStart={(e: HoldEvent) => {
                     void onHoldStart(sound.id, e)
                   }}
                   onHoldEnd={() => onHoldEnd(sound.id)}
@@ -153,7 +160,7 @@ export function SirenControlPage() {
               }}
               onHoldStart={
                 sound.mode === 'hold' && !hornDisabled
-                  ? (e) => {
+                  ? (e: HoldEvent) => {
                       void onHoldStart(sound.id, e)
                     }
                   : undefined

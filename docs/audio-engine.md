@@ -1,6 +1,22 @@
 # Moteur audio — contraintes de conception (prod)
 
-Ce document décrit le graphe Web Audio (`src/audio/engine.ts`), la configuration (`src/utils/sirenConfig.ts`), le store et les pratiques de loudness. Il est aligné sur l’implémentation **actuelle**.
+Ce document décrit le graphe Web Audio, la configuration (`src/utils/sirenConfig.ts`), le store et les pratiques de loudness. Il est aligné sur l’implémentation **actuelle**.
+
+## Architecture modulaire (`src/audio/`)
+
+| Module | Rôle |
+|--------|------|
+| **`engine.ts`** | Orchestration : `AudioContext`, `init` / chargement buffers horns, `play` / `stop`, normalisation + `AUDIO_CALIBRATION`, dispatch vers les builders. |
+| **`masterChain.ts`** | `createMasterChain` : bus `mixGain` → pré-EQ → saturateur → compresseur → makeup → `masterGain` → présence / shelf → DC blocker → **limiteur final** ; branchements vers `destination` et analyseurs. |
+| **`routing.ts`** | **`connectOscWithTimbre`** (sirènes US / génériques, timbre EU = paramètres drive/LP) ; **`connectFrOscWithTimbre`** / **`connectFrSourceWithTimbre`** (chaîne FR dédiée pour two-tone / trois tons — ne pas mélanger avec l’autre pour une voix FR). |
+| **`horns.ts`** | Samples US uniquement : `createHorn`, `setupHornUs*`, gains horn post-calibration. |
+| **`debug.ts`** | Buffer de logs, `buildDebugSnapshot`, routage documentaire master. |
+| **`types.ts`** | `SoundPreset`, `SoundInstance`, `SirenBuildContext`, etc. |
+| **`audioCalibration.ts`** | Table `AUDIO_CALIBRATION` par id. |
+| **`sirens/`** | `wail`, `yelp`, `phaser`, `hiLo` (timeline Web Audio), `twoTone` (FR + police + trois tons), `qsiren`. |
+| **`utils/`** | `distortion` (courbes), **`audioUtils`** (`measureRMS`, **`getAssetUrl`** pour `import.meta.env.BASE_URL`, bruit, jitter, attaches drift/wobble), `envelopes` (WAIL / YELP). |
+
+Les **`fetch`** d’assets (horns publics, `preloadSamples`) passent par **`getAssetUrl()`** afin de respecter le **base path** Vite en production (sous-dossier).
 
 ## Loudness
 
@@ -27,7 +43,7 @@ Ce document décrit le graphe Web Audio (`src/audio/engine.ts`), la configuratio
 - **`buildSynth`** :
   - **twoToneA / twoToneM** : routage FR **pompiers** vs **police** via `preset.regionStyle === 'eu'` et `preset.variant === 'fire' | 'police'` (fréquences / helpers `createTwoToneFr` / `createPoliceFrTwoTone`). Sinon défaut US `[700, 900]`.
   - Plus de **`id.includes('eu-police')`** ni **`startsWith('eu-')`** dans le moteur.
-- **`connectOscWithTimbre`** : timbre « Europe » lorsque **`preset.regionStyle === 'eu'`** (drive / cutoff / Q ajustés).
+- **`connectOscWithTimbre`** (`routing.ts`) : timbre « Europe » lorsque **`preset.regionStyle === 'eu'`** (drive / cutoff / Q ajustés sur la **même** chaîne shaper+LP que les US — distinct de la chaîne FR **`connectFrOscWithTimbre`** utilisée par `sirens/twoTone.ts`).
 - **Store** : **`audioEngine.play`** reçoit **`kind`**, **`regionStyle`**, **`variant`** depuis la définition ; règles de mixage ambu EU : **`isEuAmbulance(def)`** (`regionStyle === 'eu'` && `variant === 'ambulance'`), plus de **`startsWith('eu-ambu-')`**.
 
 ## Horns
@@ -40,8 +56,7 @@ Ce document décrit le graphe Web Audio (`src/audio/engine.ts`), la configuratio
 
 ## Automation longue durée
 
-- Les enveloppes de fréquence / gain des sirènes concernées sont **planifiées en une fois** sur un **horizon fixe** (boucles synchrones au moment du `play`), sur la **timeline Web Audio** — pas de re-planification périodique via **`setTimeout`** pour la **modulation** de ces sirènes.
-- **Exception** : **`createSwitchedTone` (HI-LO)** utilise encore **`setInterval`** pour alterner les fréquences (hors horizon Web Audio fixe) tant que la voix est active.
+- Les enveloppes de fréquence / gain des sirènes concernées sont **planifiées en une fois** sur un **horizon fixe** (boucles synchrones au moment du `play`), sur la **timeline Web Audio** — pas de re-planification périodique via **`setTimeout`** / **`setInterval`** pour la **modulation** de ces sirènes (y compris **HI-LO** : `createSwitchedTone` dans `sirens/hiLo.ts`).
 - Limite : au-delà de l’horizon planifié, la courbe ne s’étend pas ; les lectures continues très longues peuvent nécessiter une évolution future (voir historique *infinite automation* ci-dessous).
 
 ## Analyseur & debug
@@ -50,6 +65,7 @@ Ce document décrit le graphe Web Audio (`src/audio/engine.ts`), la configuratio
 - **Debug** : tap **pré-EQ finale** via **`getAnalyserDebugPreFinalEq()`** ; snapshot **`getDebugSnapshot()`** inclut **RMS** / **dBFS** approximatif post-limiteur (**`measureRMS`** sur le tampon temporel).
 - **Logs moteur** : **`logDebug`** alimente un buffer interne ; **`console.debug`** uniquement si **`?debugAudio=1`** au chargement (voir `init()`).
 - **UI** : panneau debug audio affiché seulement en **`import.meta.env.DEV`**, **`?debug=1`**, ou **`VITE_SHOW_AUDIO_DEBUG=true`**.
+- **Récap déclencheurs** : `?debug=1` ou dev ou `VITE_SHOW_AUDIO_DEBUG` → panneau UI ; `?debugAudio=1` (URL au **`init`**) → `console.debug` côté moteur en plus du buffer interne.
 
 ## État au dépôt (synthèse)
 
@@ -93,13 +109,18 @@ Un ancien mode s’appuyait sur **`setTimeout`** pour prolonger la modulation ; 
 | WAIL (asymétrique) | `horizonCycles = 90` | ~6 min |
 | YELP (continu) | `horizonCycles = 720` | ~3 min |
 | Deux tons FR / police | `horizonSteps = 600` | ~5,6 à 12 min |
-| HI-LO | `setInterval` | Tant que la voix est active |
+| HI-LO | `HILO_HORIZON_STEPS = 600` | ~5 min (pas 500 ms) |
 
 ---
 
 ## Fichiers liés
 
-- Graphe et voix : `src/audio/engine.ts`
+- Orchestration : `src/audio/engine.ts`
+- Chaîne master : `src/audio/masterChain.ts`
+- Routage timbre / voix FR : `src/audio/routing.ts`
+- Sirènes par famille : `src/audio/sirens/*.ts`
+- Horns samples : `src/audio/horns.ts`
 - Calibration par id : `src/audio/audioCalibration.ts`
+- Utils (RMS, `getAssetUrl`, …) : `src/audio/utils/audioUtils.ts`
 - Routage UI / définitions : `src/store/sirenStore.ts`, `src/utils/sirenConfig.ts`
 - Horns (produit) : [`docs/horn-realism.md`](horn-realism.md), `public/audio/README.md`

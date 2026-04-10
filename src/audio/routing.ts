@@ -2,7 +2,15 @@ import type { SoundInstance } from './types'
 import { makeDistortionCurve, makeSirenLocalTanhCurve } from './utils/distortion'
 
 /**
- * Osc → waveshaper (tanh impair) → low-pass → `destination` (défaut : `voiceInput`).
+ * Routage timbre sirène :
+ *
+ * - **`connectOscWithTimbre`** : chaîne **US / générique** (osc seul → shaper → LP → voix). Utilisé pour Q-siren,
+ *   phaser, HI-LO, deux tons « simples » non-FR. Le timbre **EU** sur le même chemin ne fait qu’ajuster drive /
+ *   cutoff / Q selon `preset.regionStyle` (même graphe, paramètres différents).
+ *
+ * - **`connectFrOscWithTimbre` / `connectFrSourceWithTimbre`** : chaîne **dédiée France** (HP → shaper → HP DC → LP)
+ *   vers `voiceInput`, pour les voix **two-tone / trois tons FR** construites dans `sirens/twoTone.ts` (gate + comp +
+ *   EQ ensuite). Ne pas mélanger les deux pour une même voix FR : le timbre FR repose sur ce graphe + `voiceInput.gain`.
  */
 export function connectOscWithTimbre(
   ctx: AudioContext,
@@ -16,7 +24,7 @@ export function connectOscWithTimbre(
   const isEurope = instance.preset.regionStyle === 'eu'
   const drive = isEurope ? driveAmount * 1.25 : driveAmount
   const cutoff = isEurope ? lowpassHz * 0.78 : lowpassHz
-  shaper.curve = makeDistortionCurve(drive)
+  shaper.curve = new Float32Array(makeDistortionCurve(drive))
   shaper.oversample = '2x'
   const lowpass = ctx.createBiquadFilter()
   lowpass.type = 'lowpass'
@@ -42,7 +50,7 @@ export function connectUnifiedSirenSourceToVoiceInput(
   const preGain = ctx.createGain()
   preGain.gain.value = opts?.preGain ?? 1.4
   const tanhShaper = ctx.createWaveShaper()
-  tanhShaper.curve = makeSirenLocalTanhCurve(opts?.tanhDrive ?? 2.55)
+  tanhShaper.curve = new Float32Array(makeSirenLocalTanhCurve(opts?.tanhDrive ?? 2.55))
   tanhShaper.oversample = '4x'
   const toneLp = ctx.createBiquadFilter()
   toneLp.type = 'lowpass'
@@ -78,7 +86,7 @@ export function connectFrSourceWithTimbre(
   highpass.Q.value = 0.7
 
   const shaper = ctx.createWaveShaper()
-  shaper.curve = makeDistortionCurve(driveAmount)
+  shaper.curve = new Float32Array(makeDistortionCurve(driveAmount))
   shaper.oversample = '2x'
 
   const dcHighpass = ctx.createBiquadFilter()

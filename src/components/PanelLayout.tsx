@@ -15,7 +15,7 @@ export function PanelLayout({ title, subtitle, showBack = true, children }: Prop
         <header className="mb-5 mt-1 flex items-start justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-wide">{title}</h1>
-            {subtitle ? <p className="mt-1 text-sm text-slate-400">{subtitle}</p> : null}
+            {subtitle ? <p className="mt-1 text-sm text-slate-300">{subtitle}</p> : null}
           </div>
           {showBack ? <BackButton /> : null}
         </header>

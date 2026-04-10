@@ -1,21 +1,30 @@
 # Horns (klaxons / air horns)
 
-## État actuel
+## Approche : samples uniquement
 
-Les **horns US** ne sont **plus** synthétisés dans le moteur : le rendu repose sur des **fichiers audio** bouclés pour un réalisme maximal et une maintenance simple.
+Le rendu des horns **américains concernés** est **exclusivement** assuré par des **fichiers audio** lus en boucle depuis le dossier statique du build. Il n’existe pas de branche « horn » synthétisée dans le graphe Web Audio.
 
-- **Police US** (`amer-police-horn`) : sample `horn-police-us.wav` ou `.mp3` dans `public/audio/`. Sans fichier : **aucun son** (bouton désactivé dans l’UI si le buffer n’est pas chargé).
-- **Air horn pompiers US** (`amer-fire-airhorn`) : sample `horn-fire-us.wav` ou `.mp3` dans `public/audio/`. Même comportement si absent.
+### Emplacement des fichiers
 
-La chaîne de lecture (gain interne, filtres, multiplicateurs `HORN_POLICE_GAIN` / `HORN_FIRE_GAIN` après normalisation) est décrite dans le code : `createHorn`, `setupHornUsPoliceFromSample`, `setupHornUsFireFromSample` dans `src/audio/engine.ts`.
+Les fichiers doivent être placés à la **racine** du répertoire **`public/audio/`** du projet (servis tels quels à l’URL `…/audio/…` une fois le site construit, avec prise en compte du `base` Vite via `getAssetUrl` dans le moteur).
 
-Les **klaxons européens** ont été retirés du produit (plus de boutons HORN EU dans `SIREN_CONFIG`).
+| Bouton / id | Fichiers reconnus (priorité) |
+|---------------|-------------------------------|
+| Police US (`amer-police-horn`) | `horn-police-us.wav`, puis `horn-police-us.mp3` |
+| Air horn pompiers US (`amer-fire-airhorn`) | `horn-fire-us.wav`, puis `horn-fire-us.mp3` |
 
-## Assets et calibration
+Sans fichier valide : **aucune sortie audio** pour ce preset ; l’UI peut désactiver le bouton et afficher une aide (fichier manquant).
 
-- Emplacement et noms de fichiers : `public/audio/README.md`.
-- Niveau relatif aux autres presets : coefficients par id dans `src/audio/audioCalibration.ts` (voir aussi `docs/audio-engine.md`, section Loudness).
+### Chaîne audio
 
-## Historique
+Gain, filtres et multiplicateurs **`HORN_POLICE_GAIN`** / **`HORN_FIRE_GAIN`** (après normalisation et `AUDIO_CALIBRATION`) sont implémentés dans **`src/audio/horns.ts`** (`createHorn`, `setupHornUsPoliceFromSample`, `setupHornUsFireFromSample`).
 
-Les anciennes pistes de design (synthèse multi-oscillateurs, burst air, variantes EU) ne s’appliquent plus au code actuel ; ce fichier sert uniquement de **référence produit** pour l’approche **sample-only** des horns US.
+Les **klaxons européens** ne sont pas exposés dans la configuration produit actuelle (`SIREN_CONFIG`).
+
+## Calibration
+
+Niveaux relatifs aux autres boutons : **`src/audio/audioCalibration.ts`** et section Loudness de **`docs/audio-engine.md`**.
+
+## Référence noms / droits
+
+Détails d’export et de nommage : **`public/audio/README.md`**.

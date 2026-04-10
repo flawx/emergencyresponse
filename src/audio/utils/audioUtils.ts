@@ -1,5 +1,11 @@
 import type { SoundInstance } from '../types'
 
+/** URL d’asset statique compatible `base` Vite (déploiement sous-chemin, ex. `/app/`). */
+export function getAssetUrl(path: string): string {
+  const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/')
+  return `${base}${path.replace(/^\/+/, '')}`
+}
+
 /**
  * RMS linéaire (0–1 typique) sur le tampon temporel de l’analyseur.
  * Avec l’analyseur branché après `finalLimiter`, reflète le niveau **post-limiteur** (ce que l’utilisateur entend).
