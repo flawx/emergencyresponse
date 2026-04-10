@@ -519,8 +519,8 @@ class AudioEngine {
     instance.mainOsc = oscA
     const noteMs = 180
     const cycleSec = (noteMs * 3) / 1000 + 1.0
-    const attack = 0.008
-    const release = 0.03
+    const attack = 0.005
+    const endFade = 0.02
     const horizonCycles = 220
     const start = this.context.currentTime + 0.01
     for (let i = 0; i < horizonCycles; i += 1) {
@@ -531,34 +531,25 @@ class AudioEngine {
       // Hard reset of gain automation timeline at each cycle start.
       gate.gain.cancelScheduledValues(cycleStart)
       gate.gain.setValueAtTime(0, cycleStart)
-      oscA.frequency.setValueAtTime(this.clampFrequencyHz(700 + this.nextJitter(instance, 3)), cycleStart)
-      oscA.frequency.setValueAtTime(this.clampFrequencyHz(900 + this.nextJitter(instance, 3)), t2)
-      oscA.frequency.setValueAtTime(this.clampFrequencyHz(700 + this.nextJitter(instance, 3)), t3)
+      const f1 = this.clampFrequencyHz(700 + this.nextJitter(instance, 3))
+      const f2 = this.clampFrequencyHz(900 + this.nextJitter(instance, 3))
+      const f3 = this.clampFrequencyHz(700 + this.nextJitter(instance, 3))
+      oscA.frequency.setValueAtTime(f1, cycleStart)
+      oscA.frequency.setValueAtTime(f2, t2)
+      oscA.frequency.setValueAtTime(f3, t3)
+      oscA.frequency.setValueAtTime(f3, t4)
 
+      // Keep continuous signal across the 3 notes; only light anti-click shaping.
       gate.gain.setValueAtTime(0, cycleStart)
-      gate.gain.linearRampToValueAtTime(1.15, cycleStart + attack * 0.6)
       gate.gain.linearRampToValueAtTime(1, cycleStart + attack)
-      gate.gain.setValueAtTime(1, Math.max(cycleStart + attack, t2 - release))
-      gate.gain.linearRampToValueAtTime(0, t2)
-
-      gate.gain.setValueAtTime(0, t2)
-      gate.gain.linearRampToValueAtTime(1.15, t2 + attack * 0.6)
-      gate.gain.linearRampToValueAtTime(1, t2 + attack)
-      gate.gain.setValueAtTime(1, Math.max(t2 + attack, t3 - release))
-      gate.gain.linearRampToValueAtTime(0, t3)
-
-      gate.gain.setValueAtTime(0, t3)
-      gate.gain.linearRampToValueAtTime(1.15, t3 + attack * 0.6)
-      gate.gain.linearRampToValueAtTime(1, t3 + attack)
-      gate.gain.setValueAtTime(1, Math.max(t3 + attack, t4 - release))
-      gate.gain.linearRampToValueAtTime(0, t4)
+      gate.gain.setValueAtTime(1, t4)
+      gate.gain.linearRampToValueAtTime(0, t4 + endFade)
 
       const cycleEnd = cycleStart + cycleSec
-      gate.gain.setValueAtTime(0, t4)
       gate.gain.setValueAtTime(0, cycleEnd)
       if (i < 8 || i % 20 === 0) {
         this.logDebug(
-          `[three-tone] cycle=${i} f=[${700},${900},${700}] gateOffAt=${(t4 - start).toFixed(3)}s pause=${(
+          `[three-tone] cycle=${i} f=[${f1.toFixed(1)},${f2.toFixed(1)},${f3.toFixed(1)}] fade=${endFade.toFixed(3)}s pause=${(
             cycleEnd - t4
           ).toFixed(3)}s`,
         )
