@@ -57,12 +57,14 @@ class AudioEngine {
   private context?: AudioContext
   private masterGain?: GainNode
   private mixGain?: GainNode
+  private saturatorInputGain?: GainNode
   private compressor?: DynamicsCompressorNode
+  private finalLimiter?: DynamicsCompressorNode
   private saturator?: WaveShaperNode
   private analyser?: AnalyserNode
   private dcBlocker?: BiquadFilterNode
-  private masterEqHighpass120?: BiquadFilterNode
   private masterEqHighpass180?: BiquadFilterNode
+  private masterEqPresence?: BiquadFilterNode
   private initialized = false
   private samples = new Map<string, AudioBuffer>()
   private active = new Map<string, SoundInstance>()
@@ -75,39 +77,51 @@ class AudioEngine {
     this.context = new AudioContext({ latencyHint: 'interactive' })
     this.mixGain = this.context.createGain()
     this.mixGain.gain.value = 1
+    this.saturatorInputGain = this.context.createGain()
+    this.saturatorInputGain.gain.value = 1.25
     this.saturator = this.context.createWaveShaper()
-    this.saturator.curve = this.makeDistortionCurve(4)
+    this.saturator.curve = this.makeDistortionCurve(9)
     this.saturator.oversample = '4x'
     this.compressor = this.context.createDynamicsCompressor()
-    this.compressor.threshold.value = -10
-    this.compressor.knee.value = 16
-    this.compressor.ratio.value = 6
-    this.compressor.attack.value = 0.003
-    this.compressor.release.value = 0.25
+    this.compressor.threshold.value = -20
+    this.compressor.knee.value = 14
+    this.compressor.ratio.value = 5
+    this.compressor.attack.value = 0.006
+    this.compressor.release.value = 0.08
     this.masterGain = this.context.createGain()
-    this.masterGain.gain.value = 0.85
+    this.masterGain.gain.value = 1.08
     this.analyser = this.context.createAnalyser()
     this.analyser.fftSize = 128
-    this.masterEqHighpass120 = this.context.createBiquadFilter()
-    this.masterEqHighpass120.type = 'highpass'
-    this.masterEqHighpass120.frequency.value = 120
-    this.masterEqHighpass120.Q.value = 0.7
     this.masterEqHighpass180 = this.context.createBiquadFilter()
     this.masterEqHighpass180.type = 'highpass'
     this.masterEqHighpass180.frequency.value = 180
     this.masterEqHighpass180.Q.value = 0.7
+    this.masterEqPresence = this.context.createBiquadFilter()
+    this.masterEqPresence.type = 'peaking'
+    this.masterEqPresence.frequency.value = 1450
+    this.masterEqPresence.Q.value = 0.95
+    this.masterEqPresence.gain.value = 3.2
     this.dcBlocker = this.context.createBiquadFilter()
     this.dcBlocker.type = 'highpass'
     this.dcBlocker.frequency.value = 20
     this.dcBlocker.Q.value = 0.7
+    this.finalLimiter = this.context.createDynamicsCompressor()
+    this.finalLimiter.threshold.value = -1
+    this.finalLimiter.knee.value = 0
+    this.finalLimiter.ratio.value = 20
+    this.finalLimiter.attack.value = 0.001
+    this.finalLimiter.release.value = 0.05
 
-    this.mixGain.connect(this.compressor)
+    this.mixGain.connect(this.saturatorInputGain)
+    this.saturatorInputGain.connect(this.saturator)
+    this.saturator.connect(this.compressor)
     this.compressor.connect(this.masterGain)
     this.masterGain.connect(this.analyser)
-    this.masterGain.connect(this.masterEqHighpass120)
-    this.masterEqHighpass120.connect(this.masterEqHighpass180)
-    this.masterEqHighpass180.connect(this.dcBlocker)
-    this.dcBlocker.connect(this.context.destination)
+    this.masterGain.connect(this.masterEqHighpass180)
+    this.masterEqHighpass180.connect(this.masterEqPresence)
+    this.masterEqPresence.connect(this.dcBlocker)
+    this.dcBlocker.connect(this.finalLimiter)
+    this.finalLimiter.connect(this.context.destination)
     this.logDestinationRouting()
     this.noiseBuffer = this.buildNoiseBuffer()
     this.initialized = true
@@ -252,7 +266,7 @@ class AudioEngine {
 
     const now = this.context.currentTime
     gainNode.gain.setValueAtTime(0, now)
-    gainNode.gain.linearRampToValueAtTime(preset.gain ?? this.getUnifiedGain(preset.kind), now + 0.02)
+    gainNode.gain.linearRampToValueAtTime(this.normalizePresetVolume(preset.kind, preset.gain), now + 0.02)
     this.active.set(id, instance)
     this.logDebug(`[play] ${id} kind=${preset.kind}`)
   }
@@ -260,24 +274,42 @@ class AudioEngine {
   private getUnifiedGain(kind: SoundKind) {
     switch (kind) {
       case 'qsiren':
-        return 0.42
+        return 0.48
       case 'wail':
-        return 0.4
+        return 0.47
       case 'yelp':
-        return 0.36
+        return 0.46
       case 'twoTone':
       case 'twoToneA':
       case 'twoToneM':
-        return 0.4
-      case 'threeTone':
-        return 0.4
       case 'twoToneUmh':
-        return 0.4
+        return 0.47
+      case 'threeTone':
+        return 0.47
       case 'horn':
-        return 0.34
+        return 0.44
       default:
-        return 0.38
+        return 0.46
     }
+  }
+
+  private normalizePresetVolume(kind: SoundKind, explicitGain?: number) {
+    const base = explicitGain ?? this.getUnifiedGain(kind)
+    const compensation: Partial<Record<SoundKind, number>> = {
+      qsiren: 0.98,
+      wail: 1.02,
+      yelp: 1.03,
+      hilo: 1.02,
+      phaser: 1.01,
+      horn: 0.95,
+      twoTone: 1,
+      twoToneA: 1,
+      twoToneM: 1,
+      twoToneUmh: 1,
+      threeTone: 1,
+    }
+    const normalized = base * (compensation[kind] ?? 1)
+    return Math.max(0.34, Math.min(0.56, normalized))
   }
 
   stop(id: string, fadeOut = 0.05) {
@@ -1018,9 +1050,9 @@ class AudioEngine {
 
   private logDestinationRouting() {
     const routing = [
-      'Audio route: source -> mixGain -> saturator -> masterGain -> HP120 -> HP180 -> DCBlocker -> destination',
+      'Audio route: source -> mixGain -> preGain -> saturator -> compressor -> masterGain -> HP180 -> PresenceEQ -> DCBlocker -> limiter -> destination',
       'Analyzer route: masterGain -> analyser (parallel, no destination)',
-      'Nodes connected to destination: dcBlocker only',
+      'Nodes connected to destination: finalLimiter only',
     ]
     routing.forEach((line) => this.logDebug(`[routing] ${line}`))
   }
