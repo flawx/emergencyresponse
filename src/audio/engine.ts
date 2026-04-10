@@ -30,22 +30,6 @@ type FrVoiceOptions = {
 /** Réservé aux extensions futures ; WAIL/YELP sont identiques pour tous les ids (pas de variante régionale). */
 export type WailYelpUnifiedOptions = Record<string, never>
 
-/** Variante de klaxon / trompe (voir `docs/horn-realism.md`). */
-type HornVariant = 'usFireAir' | 'usPolice' | 'standard'
-
-type HornVoiceConfig = {
-  variant: HornVariant
-  /** Utilisé seulement pour usFireAir (layers). Police / standard ont leur graphe dédié. */
-  freqs: number[]
-  oscTypes: OscillatorType[]
-  detunes: number[]
-  drive: number
-  lowpassHz: number
-  noiseLayerGain: number
-  debugModulation: string
-  debugFrequencyHz: number
-}
-
 type SoundInstance = {
   id: string
   gainNode: GainNode
@@ -71,8 +55,9 @@ type SoundInstance = {
 
 const SAMPLE_EXTENSIONS = ['mp3', 'wav', 'ogg']
 
-/** Gain final sur `gainNode` après `normalizePresetVolume`, uniquement pour le horn police US (sample). */
+/** Gain final sur `gainNode` après `normalizePresetVolume`, horns US lus en sample. */
 const HORN_POLICE_GAIN = 1.8
+const HORN_FIRE_GAIN = 1.15
 
 class AudioEngine {
   private context?: AudioContext
@@ -96,8 +81,9 @@ class AudioEngine {
   private active = new Map<string, SoundInstance>()
   private debugLog: string[] = []
   private noiseBuffer?: AudioBuffer
-  /** Boucle optionnelle : placer `horn-police-us.wav` ou `.mp3` dans `public/audio/` (voir `public/audio/README.md`). */
+  /** Optionnel : `horn-police-us.wav` / `.mp3` et `horn-fire-us.wav` / `.mp3` dans `public/audio/`. */
   private policeHornBuffer?: AudioBuffer
+  private airHornBuffer?: AudioBuffer
   private frDebugIsolation = false
   /** Cible de mesure documentée (RMS post-limiteur, voix seule) — calage via `staticCompensation`, pas d’apprentissage runtime. */
   private readonly loudnessTargetDb = -11
@@ -166,10 +152,11 @@ class AudioEngine {
     this.logDestinationRouting()
     this.noiseBuffer = this.buildNoiseBuffer()
     await this.loadPoliceHornBuffer()
+    await this.loadAirHornBuffer()
     this.initialized = true
   }
 
-  /** Charge un extrait réel de horn police US depuis `public/audio/` ; silencieux si absent (fallback synthèse). */
+  /** Charge `horn-police-us` depuis `public/audio/` ; absent = pas de son pour ce preset. */
   private async loadPoliceHornBuffer(): Promise<void> {
     if (!this.context) return
     const base = (import.meta.env.BASE_URL ?? '/').replace(/\/?$/, '/')
@@ -186,7 +173,29 @@ class AudioEngine {
       }
     }
     this.policeHornBuffer = undefined
-    this.logDebug('[horn-police] no sample in public/audio — using synth fallback')
+    this.logDebug('[horn-police] no sample in public/audio')
+  }
+
+  /** Charge `horn-fire-us` depuis `public/audio/` ; absent = pas de son pour l’air horn US. */
+  private async loadAirHornBuffer(): Promise<void> {
+    if (!this.context) return
+    const base = (import.meta.env.BASE_URL ?? '/').replace(/\/?$/, '/')
+    for (const ext of ['wav', 'mp3'] as const) {
+      try {
+        const res = await fetch(`${base}audio/horn-fire-us.${ext}`)
+        if (!res.ok) continue
+        const raw = await res.arrayBuffer()
+        this.airHornBuffer = await this.context.decodeAudioData(raw.slice(0))
+        this.logDebug(
+          `[horn-fire] sample loaded (horn-fire-us.${ext}, ${this.airHornBuffer.duration.toFixed(2)}s)`,
+        )
+        return
+      } catch (e) {
+        this.logDebug(`[horn-fire] sample horn-fire-us.${ext} failed: ${e}`)
+      }
+    }
+    this.airHornBuffer = undefined
+    this.logDebug('[horn-fire] no sample in public/audio')
   }
 
   async resume() {
@@ -333,11 +342,14 @@ class AudioEngine {
 
     const now = this.context.currentTime
     const normalizedGain = this.normalizePresetVolume(preset.kind, preset.gain)
-    const policeHornSampleInstant =
-      instance.debug.modulation === 'horn-us-police-sample'
-    if (policeHornSampleInstant) {
+    const hornSampleInstant =
+      instance.debug.modulation === 'horn-us-police-sample' ||
+      instance.debug.modulation === 'horn-us-fire-sample'
+    if (hornSampleInstant) {
       gainNode.gain.cancelScheduledValues(now)
-      gainNode.gain.setValueAtTime(normalizedGain * HORN_POLICE_GAIN, now)
+      const hornMul =
+        instance.debug.modulation === 'horn-us-police-sample' ? HORN_POLICE_GAIN : HORN_FIRE_GAIN
+      gainNode.gain.setValueAtTime(normalizedGain * hornMul, now)
     } else {
       gainNode.gain.setValueAtTime(0, now)
       gainNode.gain.linearRampToValueAtTime(normalizedGain, now + 0.02)
@@ -572,7 +584,6 @@ class AudioEngine {
 
   /**
    * Osc → waveshaper (tanh impair) → low-pass → `destination` (défaut : `voiceInput`).
-   * Pour les horns, passer `hornMix` pour regrouper toutes les sources avant le bus voix.
    */
   private connectOscWithTimbre(
     instance: SoundInstance,
@@ -1113,79 +1124,6 @@ class AudioEngine {
     return curve
   }
 
-  private resolveHornVariant(instance: SoundInstance): HornVariant {
-    if (instance.id.includes('amer-fire')) return 'usFireAir'
-    if (instance.id.includes('amer-police')) return 'usPolice'
-    return 'standard'
-  }
-
-  private getHornVoiceConfig(instance: SoundInstance): HornVoiceConfig {
-    const variant = this.resolveHornVariant(instance)
-    if (variant === 'usFireAir') {
-      return {
-        variant,
-        freqs: [180, 220, 260],
-        oscTypes: ['sawtooth', 'square', 'sawtooth'],
-        detunes: [-5, 3, 6],
-        drive: 28,
-        lowpassHz: 2100,
-        noiseLayerGain: 0.01,
-        debugModulation: 'horn-us-fire-air',
-        debugFrequencyHz: 180,
-      }
-    }
-    if (variant === 'usPolice') {
-      return {
-        variant,
-        freqs: [],
-        oscTypes: [],
-        detunes: [],
-        drive: 2,
-        lowpassHz: 0,
-        noiseLayerGain: 0,
-        debugModulation: 'horn-us-police-synth-fallback',
-        debugFrequencyHz: 660,
-      }
-    }
-    const isEurope = instance.id.startsWith('eu-')
-    if (isEurope) {
-      return {
-        variant,
-        freqs: [],
-        oscTypes: [],
-        detunes: [],
-        drive: 1.5,
-        lowpassHz: 1800,
-        noiseLayerGain: 0.004,
-        debugModulation: 'horn-standard-eu',
-        debugFrequencyHz: 420,
-      }
-    }
-    return {
-      variant,
-      freqs: [],
-      oscTypes: [],
-      detunes: [],
-      drive: 1.5,
-      lowpassHz: 1800,
-      noiseLayerGain: 0.006,
-      debugModulation: 'horn-standard',
-      debugFrequencyHz: 420,
-    }
-  }
-
-  /**
-   * Police US : sample bouclé (`policeHornBuffer`) si disponible, sinon synthèse bruit + filtre.
-   */
-  private setupHornUsPolice(instance: SoundInstance, hornMix: GainNode, _now: number) {
-    if (!this.context) return
-    if (this.policeHornBuffer) {
-      this.setupHornUsPoliceFromSample(instance, hornMix)
-      return
-    }
-    this.setupHornUsPoliceSynthFallback(instance, hornMix)
-  }
-
   private setupHornUsPoliceFromSample(instance: SoundInstance, hornMix: GainNode) {
     if (!this.context || !this.policeHornBuffer) return
     const source = this.context.createBufferSource()
@@ -1219,203 +1157,72 @@ class AudioEngine {
     source.start()
   }
 
-  /** Fallback si aucun fichier dans `public/audio/horn-police-us.*`. */
-  private setupHornUsPoliceSynthFallback(instance: SoundInstance, hornMix: GainNode) {
-    if (!this.context || !this.noiseBuffer) return
+  /** Air horn pompiers US : sample bouclé + gain + bandpass léger. */
+  private setupHornUsFireFromSample(instance: SoundInstance, hornMix: GainNode) {
+    if (!this.context || !this.airHornBuffer) return
+    const source = this.context.createBufferSource()
+    source.buffer = this.airHornBuffer
+    source.loop = true
 
-    const noise = this.context.createBufferSource()
-    noise.buffer = this.noiseBuffer
-    noise.loop = true
-
-    const preGain = this.context.createGain()
-    preGain.gain.value = 12.0
-
-    const shaper = this.context.createWaveShaper()
-    shaper.curve = this.makeDistortionCurve(5.0)
-    shaper.oversample = '2x'
-
+    const voiceGain = this.context.createGain()
+    voiceGain.gain.value = 1.0
     const bp = this.context.createBiquadFilter()
     bp.type = 'bandpass'
-    bp.frequency.value = 420
-    bp.Q.value = 5.0
+    bp.frequency.value = 500
+    bp.Q.value = 1.2
 
-    const lfo = this.context.createOscillator()
-    lfo.type = 'square'
-    lfo.frequency.value = 35
-    const lfoGain = this.context.createGain()
-    lfoGain.gain.value = 120
-    lfo.connect(lfoGain)
-    lfoGain.connect(bp.frequency)
-    instance.lfoNodes.push(lfo)
-    instance.modulationNodes.push(lfoGain)
-
-    noise.connect(preGain)
-    preGain.connect(shaper)
-    shaper.connect(bp)
+    source.connect(voiceGain)
+    voiceGain.connect(bp)
     bp.connect(hornMix)
 
-    const osc = this.context.createOscillator()
-    osc.type = 'square'
-    osc.frequency.value = 320
-    const oscMixGain = this.context.createGain()
-    oscMixGain.gain.value = 0.07
-    osc.connect(oscMixGain)
-    oscMixGain.connect(hornMix)
+    const t = this.context.currentTime
+    hornMix.gain.cancelScheduledValues(t)
+    hornMix.gain.setValueAtTime(1, t)
 
-    instance.modulationNodes.push(noise, preGain, shaper, bp, oscMixGain)
-
-    lfo.start()
-    noise.start()
-    osc.start()
-    instance.oscillators.push(osc)
+    instance.sampleSource = source
+    instance.modulationNodes.push(voiceGain, bp)
+    source.start()
   }
 
   /**
-   * Klaxon standard : sine 420 Hz + square 415 Hz (battement), saturation légère, LP ~1,8 kHz.
-   * Pas de scaling EU sur le drive (réglages fixes demandés).
-   */
-  private setupHornStandard(instance: SoundInstance, hornMix: GainNode, _now: number) {
-    if (!this.context) return
-    const drive = 1.5
-    const lpHz = 1800
-    const microDetune = () => Math.round((Math.random() * 6 - 3) * 10) / 10
-
-    const mkChain = (osc: OscillatorNode) => {
-      const shaper = this.context.createWaveShaper()
-      shaper.curve = this.makeDistortionCurve(drive)
-      shaper.oversample = '2x'
-      const lp = this.context.createBiquadFilter()
-      lp.type = 'lowpass'
-      lp.frequency.value = lpHz
-      lp.Q.value = 0.75
-      osc.connect(shaper)
-      shaper.connect(lp)
-      lp.connect(hornMix)
-      instance.modulationNodes.push(shaper, lp)
-    }
-
-    const sine = this.context.createOscillator()
-    sine.type = 'sine'
-    sine.frequency.value = 420
-    sine.detune.value = microDetune()
-    mkChain(sine)
-    sine.start()
-    instance.oscillators.push(sine)
-
-    const square = this.context.createOscillator()
-    square.type = 'square'
-    square.frequency.value = 415
-    square.detune.value = microDetune()
-    const sqGain = this.context.createGain()
-    sqGain.gain.value = 0.27
-    const shSq = this.context.createWaveShaper()
-    shSq.curve = this.makeDistortionCurve(drive)
-    shSq.oversample = '2x'
-    const lpSq = this.context.createBiquadFilter()
-    lpSq.type = 'lowpass'
-    lpSq.frequency.value = lpHz
-    lpSq.Q.value = 0.75
-    square.connect(sqGain)
-    sqGain.connect(shSq)
-    shSq.connect(lpSq)
-    lpSq.connect(hornMix)
-    instance.modulationNodes.push(sqGain, shSq, lpSq)
-    square.start()
-    instance.oscillators.push(square)
-  }
-
-  /**
-   * Bus interne horn : toutes les sources horn → hornMix [→ accent air] → voiceInput.
-   * Enveloppe sur hornMix.gain (le niveau sortie reste asservi par `play()` sur gainNode).
+   * Horns : uniquement samples US (`horn-police-us`, `horn-fire-us`). Pas de synthèse.
+   * Enveloppe hornMix ; niveau final via `play()` sur gainNode.
    */
   private createHorn(instance: SoundInstance) {
     if (!this.context) return
-    const cfg = this.getHornVoiceConfig(instance)
     const hornMix = this.context.createGain()
     hornMix.gain.value = 0
 
     const now = this.context.currentTime
-    if (cfg.variant === 'standard') {
-      hornMix.gain.setValueAtTime(0, now)
-      hornMix.gain.linearRampToValueAtTime(1, now + 0.026)
-      hornMix.gain.setTargetAtTime(0.9, now + 0.042, 0.085)
-    } else {
-      hornMix.gain.setValueAtTime(0, now)
-      hornMix.gain.linearRampToValueAtTime(1, now + 0.014)
-      hornMix.gain.setTargetAtTime(0.94, now + 0.03, 0.065)
-    }
-
-    if (cfg.variant === 'usFireAir') {
-      const midAccent = this.context.createBiquadFilter()
-      midAccent.type = 'peaking'
-      midAccent.frequency.value = 1050
-      midAccent.Q.value = 0.85
-      midAccent.gain.value = 2.8
-      hornMix.connect(midAccent)
-      midAccent.connect(instance.voiceInput)
-      instance.modulationNodes.push(midAccent)
-    } else {
-      hornMix.connect(instance.voiceInput)
-    }
+    hornMix.gain.setValueAtTime(0, now)
+    hornMix.gain.linearRampToValueAtTime(1, now + 0.014)
+    hornMix.gain.setTargetAtTime(0.94, now + 0.03, 0.065)
+    hornMix.connect(instance.voiceInput)
     instance.modulationNodes.push(hornMix)
 
-    if (cfg.variant === 'usFireAir') {
-      const n = cfg.freqs.length
-      for (let i = 0; i < n; i += 1) {
-        const osc = this.context.createOscillator()
-        osc.type = cfg.oscTypes[i] ?? 'sine'
-        osc.frequency.value = cfg.freqs[i] ?? 420
-        osc.detune.value = (cfg.detunes[i] ?? 0) + Math.round((Math.random() * 6 - 3) * 10) / 10
-        this.connectOscWithTimbre(instance, osc, cfg.lowpassHz, cfg.drive, hornMix)
-        osc.start()
-        instance.oscillators.push(osc)
-      }
-      this.connectHornAirBurst(instance, hornMix, now)
-    } else if (cfg.variant === 'usPolice') {
-      this.setupHornUsPolice(instance, hornMix, now)
-    } else {
-      this.setupHornStandard(instance, hornMix, now)
-    }
+    const isPoliceHorn = instance.id === 'amer-police-horn'
+    const isFireAirHorn = instance.id === 'amer-fire-airhorn'
 
-    instance.mainOsc = instance.oscillators[0]
-    instance.debug.frequencyHz = cfg.debugFrequencyHz
-    instance.debug.modulation = cfg.debugModulation
-    if (cfg.variant === 'usPolice' && this.policeHornBuffer) {
+    if (isPoliceHorn && this.policeHornBuffer) {
+      this.setupHornUsPoliceFromSample(instance, hornMix)
       instance.debug.modulation = 'horn-us-police-sample'
       instance.debug.frequencyHz = 0
+    } else if (isFireAirHorn && this.airHornBuffer) {
+      this.setupHornUsFireFromSample(instance, hornMix)
+      instance.debug.modulation = 'horn-us-fire-sample'
+      instance.debug.frequencyHz = 0
+    } else if (isPoliceHorn || isFireAirHorn) {
+      instance.debug.modulation = isPoliceHorn ? 'horn-us-police-sample-missing' : 'horn-us-fire-sample-missing'
+      instance.debug.frequencyHz = 0
+      this.logDebug(`[horn] sample missing id=${instance.id}`)
+    } else {
+      instance.debug.modulation = 'horn-unsupported'
+      instance.debug.frequencyHz = 0
+      this.logDebug(`[horn] unsupported horn id=${instance.id}`)
     }
-    this.attachGainWobble(instance, instance.gainNode.gain, 0.1, 0.018)
-    this.attachNoiseLayer(instance, cfg.noiseLayerGain, hornMix)
-  }
 
-  /** Transient air : burst de bruit court, BP + enveloppe (une seule fois au démarrage). */
-  private connectHornAirBurst(instance: SoundInstance, hornMix: GainNode, startAt: number) {
-    if (!this.context) return
-    const sampleRate = this.context.sampleRate
-    const durSec = 0.1
-    const nFrames = Math.max(256, Math.floor(sampleRate * durSec))
-    const buf = this.context.createBuffer(1, nFrames, sampleRate)
-    const ch = buf.getChannelData(0)
-    for (let i = 0; i < nFrames; i += 1) {
-      ch[i] = Math.random() * 2 - 1
-    }
-    const src = this.context.createBufferSource()
-    src.buffer = buf
-    const bp = this.context.createBiquadFilter()
-    bp.type = 'bandpass'
-    bp.frequency.value = 950
-    bp.Q.value = 1.1
-    const g = this.context.createGain()
-    g.gain.value = 0
-    src.connect(bp)
-    bp.connect(g)
-    g.connect(hornMix)
-    const t0 = startAt
-    g.gain.setValueAtTime(0, t0)
-    g.gain.linearRampToValueAtTime(0.42, t0 + 0.004)
-    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.068)
-    src.start(t0)
-    instance.modulationNodes.push(bp, g)
+    const firstOsc = instance.oscillators[0]
+    if (firstOsc) instance.mainOsc = firstOsc
   }
 
   private playStopChirp() {

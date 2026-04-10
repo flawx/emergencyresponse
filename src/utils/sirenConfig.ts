@@ -97,7 +97,6 @@ export const SIREN_CONFIG = {
         kind: 'yelp',
         exclusiveWith: ['amer-ambu-hilo', 'amer-ambu-wail'],
       },
-      { id: 'amer-ambu-horn', label: 'HORN', mode: 'hold', kind: 'horn' },
       { id: 'amer-ambu-stop', label: 'STOP', mode: 'stop', kind: 'horn' },
     ]),
   },
@@ -117,7 +116,6 @@ export const SIREN_CONFIG = {
         kind: 'twoToneM',
         exclusiveWith: ['eu-fire-two-a'],
       },
-      { id: 'eu-fire-airhorn', label: 'AIR HORN', mode: 'hold', kind: 'horn' },
       { id: 'eu-fire-stop', label: 'STOP', mode: 'stop', kind: 'horn' },
     ]),
     police: cfg('europe', 'police', [
@@ -135,7 +133,6 @@ export const SIREN_CONFIG = {
         kind: 'twoToneM',
         exclusiveWith: ['eu-police-two-a'],
       },
-      { id: 'eu-police-horn', label: 'HORN', mode: 'hold', kind: 'horn' },
       { id: 'eu-police-stop', label: 'STOP', mode: 'stop', kind: 'horn' },
     ]),
     ambulance: cfg('europe', 'ambulance', [
@@ -168,7 +165,6 @@ export const SIREN_CONFIG = {
         kind: 'yelp',
         exclusiveWith: ['eu-ambu-three-tone', 'eu-ambu-umh'],
       },
-      { id: 'eu-ambu-horn', label: 'HORN', mode: 'hold', kind: 'horn' },
       { id: 'eu-ambu-stop', label: 'STOP', mode: 'stop', kind: 'horn' },
     ]),
   },

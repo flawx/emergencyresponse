@@ -10,4 +10,11 @@ Pour un rendu **sample** au lieu du fallback synthèse :
    - `horn-police-us.wav` *(prioritaire)*  
    - `horn-police-us.mp3`
 
-Le moteur charge le sample au `init()` ; s’il est absent, le horn police US utilise une **synthèse de secours** (bruit filtré).
+Le moteur charge le sample au `init()` ; s’il est absent, le bouton **HORN** police US reste **silencieux** (aucune synthèse).
+
+## Air horn pompiers US
+
+Même principe que le horn police :
+
+- Fichiers : `horn-fire-us.wav` *(prioritaire)* ou `horn-fire-us.mp3` dans ce dossier.
+- Sans fichier : le **AIR HORN** américain ne produit aucun son.
