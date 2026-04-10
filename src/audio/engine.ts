@@ -79,10 +79,8 @@ class AudioEngine {
   private debugLog: string[] = []
   private noiseBuffer?: AudioBuffer
   private frDebugIsolation = false
+  /** Cible de mesure documentée (RMS post-limiteur, voix seule) — calage via `staticCompensation`, pas d’apprentissage runtime. */
   private readonly loudnessTargetDb = -11
-  private loudnessByKind = new Map<SoundKind, number>()
-  private loudnessGainByKind = new Map<SoundKind, number>()
-  private loudnessTrackers = new Map<string, number>()
 
   async init() {
     if (this.initialized) return
@@ -297,7 +295,6 @@ class AudioEngine {
     const normalizedGain = this.normalizePresetVolume(preset.kind, preset.gain)
     gainNode.gain.linearRampToValueAtTime(normalizedGain, now + 0.02)
     this.active.set(id, instance)
-    this.startLoudnessTracking(id, preset.kind)
     this.logDebug(`[play] ${id} kind=${preset.kind}`)
   }
 
@@ -338,59 +335,13 @@ class AudioEngine {
       twoToneUmh: 1.12,
       threeTone: 1.14,
     }
-    const learnedCompensation = this.loudnessGainByKind.get(kind) ?? 1
-    const normalized = (explicitGain ?? target) * (staticCompensation[kind] ?? 1) * learnedCompensation
+    const staticMul = staticCompensation[kind] ?? 1
+    const normalized = (explicitGain ?? target) * staticMul
     const clamped = Math.max(0.4, Math.min(0.64, normalized))
     this.logDebug(
-      `[loudness] kind=${kind} gain=${clamped.toFixed(3)} static=${(staticCompensation[kind] ?? 1).toFixed(
-        3,
-      )} learned=${learnedCompensation.toFixed(3)}`,
+      `[loudness] kind=${kind} gain=${clamped.toFixed(3)} static=${staticMul.toFixed(3)} targetDbRef=${this.loudnessTargetDb}`,
     )
     return clamped
-  }
-
-  private startLoudnessTracking(id: string, kind: SoundKind) {
-    if (!this.context || !this.analyser) return
-    if (this.active.size !== 1) return
-    const startedAt = this.context.currentTime
-    const tracker = window.setInterval(() => {
-      if (!this.context || !this.analyser || !this.active.has(id)) {
-        const existing = this.loudnessTrackers.get(id)
-        if (existing) window.clearInterval(existing)
-        this.loudnessTrackers.delete(id)
-        return
-      }
-      if (this.active.size !== 1) return
-      const samples = new Float32Array(this.analyser.fftSize)
-      this.analyser.getFloatTimeDomainData(samples)
-      let sum = 0
-      for (let i = 0; i < samples.length; i += 1) {
-        sum += samples[i] * samples[i]
-      }
-      const rms = Math.sqrt(sum / samples.length)
-      const measuredDb = this.measureLoudness(rms)
-      const prevDb = this.loudnessByKind.get(kind)
-      const smoothedDb = prevDb == null ? measuredDb : prevDb * 0.82 + measuredDb * 0.18
-      this.loudnessByKind.set(kind, smoothedDb)
-      const adjustDb = Math.max(-6, Math.min(6, this.loudnessTargetDb - smoothedDb))
-      const gainComp = Math.pow(10, adjustDb / 20)
-      this.loudnessGainByKind.set(kind, gainComp)
-      if (this.context.currentTime - startedAt > 2.4) {
-        window.clearInterval(tracker)
-        this.loudnessTrackers.delete(id)
-      }
-      this.logDebug(
-        `[loudness] kind=${kind} measured=${smoothedDb.toFixed(2)}dB target=${this.loudnessTargetDb}dB comp=${gainComp.toFixed(
-          3,
-        )}`,
-      )
-    }, 180)
-    this.loudnessTrackers.set(id, tracker)
-  }
-
-  private measureLoudness(rms: number) {
-    const floor = 1e-7
-    return 20 * Math.log10(Math.max(floor, rms))
   }
 
   stop(id: string, fadeOut = 0.05) {
@@ -404,11 +355,6 @@ class AudioEngine {
     instance.gainNode.gain.linearRampToValueAtTime(0, now + fadeOut)
 
     window.setTimeout(() => {
-      const tracker = this.loudnessTrackers.get(id)
-      if (tracker) {
-        window.clearInterval(tracker)
-        this.loudnessTrackers.delete(id)
-      }
       try {
         instance.sampleSource?.stop()
       } catch {

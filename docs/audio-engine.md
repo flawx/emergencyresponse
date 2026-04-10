@@ -4,9 +4,10 @@ Ce document verrouille les règles d’implémentation pour le graphe Web Audio 
 
 ## Loudness
 
-- **Cible abstraite** : calibrer les presets vers une mesure de référence (ex. **RMS ~ -11 dBFS** sur une voix isolée), **sans** utiliser un preset particulier (ex. un id WAIL) comme référence : sinon toute évolution du WAIL casserait le calage global.
+- **Cible abstraite** : calibrer les presets vers une mesure de référence (ex. **RMS ~ -11 dBFS** sur une voix isolée, **après le limiteur**), **sans** utiliser un preset particulier comme référence : sinon toute évolution de ce preset casserait le calage global.
 - **RMS ≠ loudness perçu** : toute calibration doit être validée **par mesure** et **par écoute comparative** entre presets.
-- **Multi-voix** : pas de loudness « temps réel » qui recalcule le mix sur N voix ; stabilité et prévisibilité avant tout. Les niveaux par `kind` sont ajustés pour qu’une voix seule approche la cible.
+- **Multi-voix** : pas de loudness « temps réel » qui recalcule le mix sur N voix ; stabilité et prévisibilité avant tout.
+- **Implémentation** : le gain par voix vient de **`getUnifiedGain(kind)`** × **`staticCompensation[kind]`** (constantes versionnées dans le code). **Pas d’apprentissage runtime** (`Map` qui modifie le niveau entre deux lectures) : même rendu quelle que soit l’ordre des lectures ou le nombre de voix compatibles.
 
 ## Saturation
 
