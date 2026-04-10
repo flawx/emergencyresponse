@@ -585,21 +585,25 @@ class AudioEngine {
   }
 
   /**
-   * WAIL/YELP : saw riche → preGain → tanh (harmoniques) → low-pass (agressivité contrôlée) → voiceInput.
-   * Ne modifie pas la master chain.
+   * WAIL/YELP : source → preGain → tanh → low-pass → voiceInput (master inchangé).
+   * `tanhDrive` / `preGain` permettent d’adoucir le WAIL (moins « digital »).
    */
-  private connectUnifiedSirenOscToVoiceInput(instance: SoundInstance, osc: OscillatorNode) {
+  private connectUnifiedSirenSourceToVoiceInput(
+    instance: SoundInstance,
+    source: AudioNode,
+    opts?: { preGain?: number; tanhDrive?: number },
+  ) {
     if (!this.context) return
     const preGain = this.context.createGain()
-    preGain.gain.value = 1.4
+    preGain.gain.value = opts?.preGain ?? 1.4
     const tanhShaper = this.context.createWaveShaper()
-    tanhShaper.curve = this.makeSirenLocalTanhCurve()
+    tanhShaper.curve = this.makeSirenLocalTanhCurve(opts?.tanhDrive ?? 2.55)
     tanhShaper.oversample = '4x'
     const toneLp = this.context.createBiquadFilter()
     toneLp.type = 'lowpass'
     toneLp.frequency.value = 3500
     toneLp.Q.value = 0.85
-    osc.connect(preGain)
+    source.connect(preGain)
     preGain.connect(tanhShaper)
     tanhShaper.connect(toneLp)
     toneLp.connect(instance.voiceInput)
@@ -921,53 +925,67 @@ class AudioEngine {
   private createWailUnified(instance: SoundInstance, _options?: WailYelpUnifiedOptions) {
     if (!this.context) return
     console.log('[WAIL] unified version used')
-    const carrier = this.context.createOscillator()
-    carrier.type = 'sawtooth'
-    carrier.frequency.value = 500
-    this.connectUnifiedSirenOscToVoiceInput(instance, carrier)
-    carrier.start()
+    const saw = this.context.createOscillator()
+    saw.type = 'sawtooth'
+    saw.frequency.value = 500
+    const sine = this.context.createOscillator()
+    sine.type = 'sine'
+    sine.frequency.value = 500
 
-    instance.mainOsc = carrier
-    instance.oscillators.push(carrier)
+    const gSaw = this.context.createGain()
+    gSaw.gain.value = 0.78
+    const gSine = this.context.createGain()
+    gSine.gain.value = 0.22
+    const merge = this.context.createGain()
+    merge.gain.value = 1
+    saw.connect(gSaw)
+    sine.connect(gSine)
+    gSaw.connect(merge)
+    gSine.connect(merge)
+
+    const microLfo = this.context.createOscillator()
+    microLfo.type = 'sine'
+    microLfo.frequency.value = 0.28
+    const microGain = this.context.createGain()
+    microGain.gain.value = 3.5
+    microLfo.connect(microGain)
+    microGain.connect(saw.frequency)
+    microGain.connect(sine.frequency)
+    microLfo.start()
+
+    this.connectUnifiedSirenSourceToVoiceInput(instance, merge, { preGain: 1.32, tanhDrive: 2.08 })
+    saw.start()
+    sine.start()
+
+    instance.mainOsc = saw
+    instance.oscillators.push(saw, sine)
+    instance.lfoNodes.push(microLfo)
+    instance.modulationNodes.push(gSaw, gSine, merge, microGain)
     instance.debug.frequencyHz = 500
-    instance.debug.modulation = 'wail-unified-saw'
-    this.attachAnalogDrift(instance, carrier, 0.05, 3)
+    instance.debug.modulation = 'wail-saw-sine-organic'
     this.attachGainWobble(instance, instance.gainNode.gain, 0.1, 0.02)
     this.attachNoiseLayer(instance, 0.009)
     this.applyWailYelpVoicing(instance)
-    this.applyAsymmetricWailAutomation(instance, carrier)
+    this.applyAsymmetricWailAutomation(instance, [saw, sine])
   }
 
   private createYelpUnified(instance: SoundInstance, _options?: WailYelpUnifiedOptions) {
     if (!this.context) return
     console.log('[YELP] unified version used')
-    const centerHz = 1250
-    const spreadHz = 350
-    const lfoHz = 4
     const carrier = this.context.createOscillator()
     carrier.type = 'sawtooth'
-    carrier.frequency.value = centerHz
-    const lfo = this.context.createOscillator()
-    lfo.type = 'square'
-    lfo.frequency.value = lfoHz
-    const lfoGain = this.context.createGain()
-    lfoGain.gain.value = spreadHz
-    lfo.connect(lfoGain)
-    lfoGain.connect(carrier.frequency)
-    this.connectUnifiedSirenOscToVoiceInput(instance, carrier)
+    carrier.frequency.value = 900
+    this.connectUnifiedSirenSourceToVoiceInput(instance, carrier)
     carrier.start()
-    lfo.start()
 
     instance.mainOsc = carrier
     instance.oscillators.push(carrier)
-    instance.lfoNodes.push(lfo)
-    instance.modulationNodes.push(lfoGain)
-    instance.debug.frequencyHz = centerHz
-    instance.debug.modulation = 'yelp-unified-saw-square'
+    instance.debug.frequencyHz = 900
     this.attachAnalogDrift(instance, carrier, 0.06, 3.5)
     this.attachGainWobble(instance, instance.gainNode.gain, 0.12, 0.022)
     this.attachNoiseLayer(instance, 0.009)
     this.applyWailYelpVoicing(instance)
+    this.applyContinuousYelpAutomation(instance, carrier)
   }
 
   private createPhaserLfoSiren(instance: SoundInstance) {
@@ -1036,25 +1054,55 @@ class AudioEngine {
     instance.modulationNodes.push(presence, highShelf, sirenCompressor, finalBoost)
   }
 
-  private applyAsymmetricWailAutomation(instance: SoundInstance, carrier: OscillatorNode) {
+  private applyAsymmetricWailAutomation(instance: SoundInstance, carriers: OscillatorNode[]) {
     if (!this.context) return
     const minHz = 500
     const maxHz = 1500
-    const cycleSec = 4
-    const riseSec = cycleSec * 0.72
+    const baseCycleSec = 4
     const horizonCycles = 90
     const start = this.context.currentTime + 0.01
-    carrier.frequency.cancelScheduledValues(start)
-    carrier.frequency.setValueAtTime(minHz, start)
+    for (const c of carriers) {
+      c.frequency.cancelScheduledValues(start)
+      c.frequency.setValueAtTime(minHz, start)
+    }
+    let cycleStart = start
     for (let i = 0; i < horizonCycles; i += 1) {
-      const cycleStart = start + i * cycleSec
+      const cycleSec = baseCycleSec * (1 + this.nextJitter(instance, 3) * 0.009)
+      const riseSec = cycleSec * 0.72
       const peakAt = cycleStart + riseSec
       const endAt = cycleStart + cycleSec
-      carrier.frequency.setValueAtTime(minHz, cycleStart)
-      carrier.frequency.exponentialRampToValueAtTime(maxHz, peakAt)
-      carrier.frequency.exponentialRampToValueAtTime(minHz, endAt)
+      for (const c of carriers) {
+        c.frequency.setValueAtTime(minHz, cycleStart)
+        c.frequency.exponentialRampToValueAtTime(maxHz, peakAt)
+        c.frequency.exponentialRampToValueAtTime(minHz, endAt)
+      }
+      cycleStart = endAt
     }
-    instance.debug.modulation = 'wail-asymmetric-exp'
+    instance.debug.modulation = 'wail-asymmetric-exp-jitter'
+  }
+
+  /** Yelp : rampe continue 900↔1600 Hz, cycle court, sans LFO binaire. */
+  private applyContinuousYelpAutomation(instance: SoundInstance, carrier: OscillatorNode) {
+    if (!this.context) return
+    const minHz = 900
+    const maxHz = 1600
+    const baseCycleSec = 0.25
+    const horizonCycles = 720
+    const start = this.context.currentTime + 0.02
+    carrier.frequency.cancelScheduledValues(start)
+    carrier.frequency.setValueAtTime(minHz, start)
+    let t = start
+    for (let i = 0; i < horizonCycles; i += 1) {
+      const cycleSec = baseCycleSec * (1 + this.nextJitter(instance, 3) * 0.012)
+      const riseSec = cycleSec * 0.4
+      const tPeak = t + riseSec
+      const tEnd = t + cycleSec
+      carrier.frequency.setValueAtTime(minHz, t)
+      carrier.frequency.exponentialRampToValueAtTime(maxHz, tPeak)
+      carrier.frequency.exponentialRampToValueAtTime(minHz, tEnd)
+      t = tEnd
+    }
+    instance.debug.modulation = 'yelp-continuous-exp'
   }
 
   private makeWailBiasCurve() {
@@ -1214,13 +1262,13 @@ class AudioEngine {
     return curve
   }
 
-  /** Saturation locale WAIL/YELP : tanh doux, impaire, sans offset DC. */
-  private makeSirenLocalTanhCurve() {
+  /** Saturation locale WAIL/YELP : tanh impaire, sans offset DC. */
+  private makeSirenLocalTanhCurve(drive = 2.55) {
     const n = 4096
     const curve = new Float32Array(n)
     for (let i = 0; i < n; i += 1) {
       const x = (i / (n - 1)) * 2 - 1
-      curve[i] = Math.tanh(2.55 * x)
+      curve[i] = Math.tanh(drive * x)
     }
     return curve
   }
