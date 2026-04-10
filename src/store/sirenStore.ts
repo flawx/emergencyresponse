@@ -6,14 +6,14 @@ type ActiveMap = Record<string, boolean>
 
 const isWailOrYelp = (kind: SoundDefinition['kind']) => kind === 'wail' || kind === 'yelp'
 const isFrAmbuTone = (kind: SoundDefinition['kind']) => kind === 'twoTone' || kind === 'threeTone' || kind === 'twoToneUmh'
-const isFrAmbuId = (id: string) => id.startsWith('eu-ambu-')
+const isEuAmbulance = (d: SoundDefinition) => d.regionStyle === 'eu' && d.variant === 'ambulance'
 
 const canPlayTogether = (soundA: SoundDefinition, soundB: SoundDefinition) => {
   if (soundA.id === soundB.id) return true
   if (isWailOrYelp(soundA.kind) && isWailOrYelp(soundB.kind)) return false
   if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
   if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
-  if (isFrAmbuId(soundA.id) && isFrAmbuId(soundB.id)) {
+  if (isEuAmbulance(soundA) && isEuAmbulance(soundB)) {
     const aTone = isFrAmbuTone(soundA.kind)
     const bTone = isFrAmbuTone(soundB.kind)
     const aWailYelp = isWailOrYelp(soundA.kind)
@@ -26,7 +26,7 @@ const canPlayTogether = (soundA: SoundDefinition, soundB: SoundDefinition) => {
 const canIgnoreExplicitExclusive = (soundA: SoundDefinition, soundB: SoundDefinition) => {
   if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
   if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
-  if (isFrAmbuId(soundA.id) && isFrAmbuId(soundB.id)) {
+  if (isEuAmbulance(soundA) && isEuAmbulance(soundB)) {
     const aTone = isFrAmbuTone(soundA.kind)
     const bTone = isFrAmbuTone(soundB.kind)
     const aWailYelp = isWailOrYelp(soundA.kind)
@@ -116,7 +116,11 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       return { active: next }
     })
 
-    audioEngine.play(sound.id, { kind: sound.kind })
+    audioEngine.play(sound.id, {
+      kind: sound.kind,
+      regionStyle: sound.regionStyle,
+      variant: sound.variant,
+    })
 
     // Ensure dangling toggles from previous page are removed.
     for (const def of scenario.defs) {
@@ -136,7 +140,11 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
     if (sound.kind === 'qsiren') {
       if (!get().active[sound.id]) {
-        audioEngine.play(sound.id, { kind: sound.kind })
+        audioEngine.play(sound.id, {
+          kind: sound.kind,
+          regionStyle: sound.regionStyle,
+          variant: sound.variant,
+        })
         set((state) => ({ active: { ...state.active, [sound.id]: true } }))
       }
       audioEngine.setQSirenBoost(sound.id, 1)
@@ -150,7 +158,11 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       setSound(next, sound.id, true)
       return { active: next }
     })
-    audioEngine.play(sound.id, { kind: sound.kind })
+    audioEngine.play(sound.id, {
+      kind: sound.kind,
+      regionStyle: sound.regionStyle,
+      variant: sound.variant,
+    })
   },
 
   endHold: (soundId) => {

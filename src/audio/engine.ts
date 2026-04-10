@@ -1,8 +1,11 @@
-import type { SoundKind } from '../utils/sirenConfig'
+import { getSoundDefinitionById, type RegionStyle, type SoundKind, type SoundVariant } from '../utils/sirenConfig'
+import { AUDIO_CALIBRATION } from './audioCalibration'
 
 type SoundPreset = {
   kind: SoundKind
   gain?: number
+  regionStyle?: RegionStyle
+  variant?: SoundVariant
 }
 
 type DebugVoice = {
@@ -54,6 +57,20 @@ type SoundInstance = {
 }
 
 const SAMPLE_EXTENSIONS = ['mp3', 'wav', 'ogg']
+
+/**
+ * RMS linéaire (0–1 typique) sur le tampon temporel de l’analyseur.
+ * Avec l’analyseur branché après `finalLimiter`, reflète le niveau **post-limiteur** (ce que l’utilisateur entend).
+ */
+function measureRMS(analyser: AnalyserNode): number {
+  const buffer = new Float32Array(analyser.fftSize)
+  analyser.getFloatTimeDomainData(buffer)
+  let sum = 0
+  for (let i = 0; i < buffer.length; i += 1) {
+    sum += buffer[i] * buffer[i]
+  }
+  return Math.sqrt(sum / buffer.length)
+}
 
 /** Gain final sur `gainNode` après `normalizePresetVolume`, horns US lus en sample. */
 const HORN_POLICE_GAIN = 1.8
@@ -227,7 +244,19 @@ class AudioEngine {
   getDebugSnapshot() {
     const voices: Record<string, DebugVoice> = {}
     for (const [id, instance] of this.active.entries()) voices[id] = { ...instance.debug }
-    return { voices, logs: this.debugLog.slice(-25) }
+    let masterPostLimiterRms: number | null = null
+    let masterPostLimiterDbFs: number | null = null
+    if (this.analyser) {
+      const rms = measureRMS(this.analyser)
+      masterPostLimiterRms = rms
+      masterPostLimiterDbFs = rms > 1e-12 ? 20 * Math.log10(rms) : null
+    }
+    return {
+      voices,
+      logs: this.debugLog.slice(-25),
+      masterPostLimiterRms,
+      masterPostLimiterDbFs,
+    }
   }
 
   setFrDebugIsolation(enabled: boolean) {
@@ -285,7 +314,7 @@ class AudioEngine {
     this.stopAll(false)
     this.setFrDebugIsolation(true)
     await new Promise((resolve) => window.setTimeout(resolve, 50))
-    this.play('__debug-fr-two-tone', { kind: 'twoTone' })
+    this.play('__debug-fr-two-tone', { kind: 'twoTone', regionStyle: 'eu', variant: 'ambulance' })
     this.logDebug('[debug-fr] launched isolated two-tone')
   }
 
@@ -321,6 +350,16 @@ class AudioEngine {
     if (!this.context || !this.mixGain || !this.initialized) return
     if (this.active.has(id)) return
 
+    let def = getSoundDefinitionById(id)
+    if (!def && id.startsWith('__probe-')) {
+      def = getSoundDefinitionById(id.slice('__probe-'.length))
+    }
+    const presetResolved: SoundPreset = {
+      ...preset,
+      regionStyle: preset.regionStyle ?? def?.regionStyle,
+      variant: preset.variant ?? def?.variant,
+    }
+
     const gainNode = this.context.createGain()
     gainNode.gain.value = 0
     gainNode.connect(this.mixGain)
@@ -336,7 +375,7 @@ class AudioEngine {
       oscillators: [],
       lfoNodes: [],
       modulationNodes: [],
-      preset,
+      preset: presetResolved,
       debug: { frequencyHz: 0, holdActive: false, modulation: 'idle' },
     }
 
@@ -354,6 +393,8 @@ class AudioEngine {
 
     const now = this.context.currentTime
     const normalizedGain = this.normalizePresetVolume(preset.kind, preset.gain)
+    const calibration = AUDIO_CALIBRATION[id] ?? 1
+    const finalGain = normalizedGain * calibration
     const hornSampleInstant =
       instance.debug.modulation === 'horn-us-police-sample' ||
       instance.debug.modulation === 'horn-us-fire-sample'
@@ -361,10 +402,10 @@ class AudioEngine {
       gainNode.gain.cancelScheduledValues(now)
       const hornMul =
         instance.debug.modulation === 'horn-us-police-sample' ? HORN_POLICE_GAIN : HORN_FIRE_GAIN
-      gainNode.gain.setValueAtTime(normalizedGain * hornMul, now)
+      gainNode.gain.setValueAtTime(finalGain * hornMul, now)
     } else {
       gainNode.gain.setValueAtTime(0, now)
-      gainNode.gain.linearRampToValueAtTime(normalizedGain, now + 0.02)
+      gainNode.gain.linearRampToValueAtTime(finalGain, now + 0.02)
     }
     this.active.set(id, instance)
     this.logDebug(`[play] ${id} kind=${preset.kind}`)
@@ -561,22 +602,22 @@ class AudioEngine {
         this.createSwitchedTone(instance, [600, 1000], 500, 'hilo')
         break
       case 'twoToneA':
-        if (instance.id.includes('eu-police')) {
+        if (instance.preset.regionStyle === 'eu' && instance.preset.variant === 'police') {
           this.createPoliceFrTwoTone(instance, [435, 580], 580, 'twoToneA-police-fr')
           break
         }
-        if (instance.id.includes('eu-fire')) {
+        if (instance.preset.regionStyle === 'eu' && instance.preset.variant === 'fire') {
           this.createTwoToneFr(instance, [435, 488], 1200)
           break
         }
         this.createTwoToneFr(instance, [700, 900], 700)
         break
       case 'twoToneM':
-        if (instance.id.includes('eu-police')) {
+        if (instance.preset.regionStyle === 'eu' && instance.preset.variant === 'police') {
           this.createPoliceFrTwoTone(instance, [435, 580], 520, 'twoToneM-police-fr')
           break
         }
-        if (instance.id.includes('eu-fire')) {
+        if (instance.preset.regionStyle === 'eu' && instance.preset.variant === 'fire') {
           this.createTwoToneFr(instance, [435, 488], 950)
           break
         }
@@ -606,7 +647,7 @@ class AudioEngine {
   ) {
     if (!this.context) return
     const shaper = this.context.createWaveShaper()
-    const isEurope = instance.id.startsWith('eu-')
+    const isEurope = instance.preset.regionStyle === 'eu'
     const drive = isEurope ? driveAmount * 1.25 : driveAmount
     const cutoff = isEurope ? lowpassHz * 0.78 : lowpassHz
     shaper.curve = this.makeDistortionCurve(drive)

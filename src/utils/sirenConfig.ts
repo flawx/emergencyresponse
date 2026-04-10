@@ -14,14 +14,24 @@ export type SoundKind =
   | 'threeTone'
   | 'qsiren'
 
+/** Style de routage timbre / two-tone dans le moteur audio. */
+export type RegionStyle = 'us' | 'eu'
+
+/** Service d’urgence (grille UI + routage two-tone EU fire vs police). */
+export type SoundVariant = 'fire' | 'police' | 'ambulance'
+
 export type SoundDefinition = {
   id: string
   label: string
   mode: ButtonMode
   kind: SoundKind
+  regionStyle: RegionStyle
+  variant: SoundVariant
   exclusiveWith?: string[]
   stopChirp?: boolean
 }
+
+const sx = (regionStyle: RegionStyle, variant: SoundVariant) => ({ regionStyle, variant })
 
 const cfg = (region: Region, emergency: EmergencyType, defs: SoundDefinition[]) => ({
   region,
@@ -32,13 +42,14 @@ const cfg = (region: Region, emergency: EmergencyType, defs: SoundDefinition[]) 
 export const SIREN_CONFIG = {
   america: {
     fire: cfg('america', 'fire', [
-      { id: 'amer-fire-qsiren', label: 'Q-SIREN', mode: 'toggle', kind: 'qsiren' },
+      { id: 'amer-fire-qsiren', label: 'Q-SIREN', mode: 'toggle', kind: 'qsiren', ...sx('us', 'fire') },
       {
         id: 'amer-fire-wail',
         label: 'WAIL',
         mode: 'toggle',
         kind: 'wail',
         exclusiveWith: ['amer-fire-yelp'],
+        ...sx('us', 'fire'),
       },
       {
         id: 'amer-fire-yelp',
@@ -46,9 +57,10 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'yelp',
         exclusiveWith: ['amer-fire-wail'],
+        ...sx('us', 'fire'),
       },
-      { id: 'amer-fire-airhorn', label: 'AIR HORN', mode: 'hold', kind: 'horn' },
-      { id: 'amer-fire-stop', label: 'STOP', mode: 'stop', kind: 'horn' },
+      { id: 'amer-fire-airhorn', label: 'AIR HORN', mode: 'hold', kind: 'horn', ...sx('us', 'fire') },
+      { id: 'amer-fire-stop', label: 'STOP', mode: 'stop', kind: 'horn', ...sx('us', 'fire') },
     ]),
     police: cfg('america', 'police', [
       {
@@ -57,6 +69,7 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'wail',
         exclusiveWith: ['amer-police-yelp', 'amer-police-phaser'],
+        ...sx('us', 'police'),
       },
       {
         id: 'amer-police-yelp',
@@ -64,6 +77,7 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'yelp',
         exclusiveWith: ['amer-police-wail', 'amer-police-phaser'],
+        ...sx('us', 'police'),
       },
       {
         id: 'amer-police-phaser',
@@ -71,9 +85,17 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'phaser',
         exclusiveWith: ['amer-police-wail', 'amer-police-yelp'],
+        ...sx('us', 'police'),
       },
-      { id: 'amer-police-horn', label: 'HORN', mode: 'hold', kind: 'horn' },
-      { id: 'amer-police-stop', label: 'STOP', mode: 'stop', kind: 'horn', stopChirp: true },
+      { id: 'amer-police-horn', label: 'HORN', mode: 'hold', kind: 'horn', ...sx('us', 'police') },
+      {
+        id: 'amer-police-stop',
+        label: 'STOP',
+        mode: 'stop',
+        kind: 'horn',
+        stopChirp: true,
+        ...sx('us', 'police'),
+      },
     ]),
     ambulance: cfg('america', 'ambulance', [
       {
@@ -82,6 +104,7 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'hilo',
         exclusiveWith: ['amer-ambu-wail', 'amer-ambu-yelp'],
+        ...sx('us', 'ambulance'),
       },
       {
         id: 'amer-ambu-wail',
@@ -89,6 +112,7 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'wail',
         exclusiveWith: ['amer-ambu-hilo', 'amer-ambu-yelp'],
+        ...sx('us', 'ambulance'),
       },
       {
         id: 'amer-ambu-yelp',
@@ -96,8 +120,9 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'yelp',
         exclusiveWith: ['amer-ambu-hilo', 'amer-ambu-wail'],
+        ...sx('us', 'ambulance'),
       },
-      { id: 'amer-ambu-stop', label: 'STOP', mode: 'stop', kind: 'horn' },
+      { id: 'amer-ambu-stop', label: 'STOP', mode: 'stop', kind: 'horn', ...sx('us', 'ambulance') },
     ]),
   },
   europe: {
@@ -108,6 +133,7 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'twoToneA',
         exclusiveWith: ['eu-fire-two-m'],
+        ...sx('eu', 'fire'),
       },
       {
         id: 'eu-fire-two-m',
@@ -115,8 +141,9 @@ export const SIREN_CONFIG = {
         mode: 'hold',
         kind: 'twoToneM',
         exclusiveWith: ['eu-fire-two-a'],
+        ...sx('eu', 'fire'),
       },
-      { id: 'eu-fire-stop', label: 'STOP', mode: 'stop', kind: 'horn' },
+      { id: 'eu-fire-stop', label: 'STOP', mode: 'stop', kind: 'horn', ...sx('eu', 'fire') },
     ]),
     police: cfg('europe', 'police', [
       {
@@ -125,6 +152,7 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'twoToneA',
         exclusiveWith: ['eu-police-two-m'],
+        ...sx('eu', 'police'),
       },
       {
         id: 'eu-police-two-m',
@@ -132,17 +160,19 @@ export const SIREN_CONFIG = {
         mode: 'hold',
         kind: 'twoToneM',
         exclusiveWith: ['eu-police-two-a'],
+        ...sx('eu', 'police'),
       },
-      { id: 'eu-police-stop', label: 'STOP', mode: 'stop', kind: 'horn' },
+      { id: 'eu-police-stop', label: 'STOP', mode: 'stop', kind: 'horn', ...sx('eu', 'police') },
     ]),
     ambulance: cfg('europe', 'ambulance', [
-      { id: 'eu-ambu-two-tone', label: 'TWO-TONE', mode: 'toggle', kind: 'twoTone' },
+      { id: 'eu-ambu-two-tone', label: 'TWO-TONE', mode: 'toggle', kind: 'twoTone', ...sx('eu', 'ambulance') },
       {
         id: 'eu-ambu-umh',
         label: 'UMH',
         mode: 'toggle',
         kind: 'twoToneUmh',
         exclusiveWith: ['eu-ambu-two-tone', 'eu-ambu-three-tone', 'eu-ambu-wail', 'eu-ambu-yelp'],
+        ...sx('eu', 'ambulance'),
       },
       {
         id: 'eu-ambu-three-tone',
@@ -150,6 +180,7 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'threeTone',
         exclusiveWith: ['eu-ambu-two-tone', 'eu-ambu-umh', 'eu-ambu-wail', 'eu-ambu-yelp'],
+        ...sx('eu', 'ambulance'),
       },
       {
         id: 'eu-ambu-wail',
@@ -157,6 +188,7 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'wail',
         exclusiveWith: ['eu-ambu-three-tone', 'eu-ambu-umh'],
+        ...sx('eu', 'ambulance'),
       },
       {
         id: 'eu-ambu-yelp',
@@ -164,11 +196,27 @@ export const SIREN_CONFIG = {
         mode: 'toggle',
         kind: 'yelp',
         exclusiveWith: ['eu-ambu-three-tone', 'eu-ambu-umh'],
+        ...sx('eu', 'ambulance'),
       },
-      { id: 'eu-ambu-stop', label: 'STOP', mode: 'stop', kind: 'horn' },
+      { id: 'eu-ambu-stop', label: 'STOP', mode: 'stop', kind: 'horn', ...sx('eu', 'ambulance') },
     ]),
   },
 } as const
+
+function collectAllSoundDefinitions(): SoundDefinition[] {
+  return Object.values(SIREN_CONFIG).flatMap((region) =>
+    Object.values(region).flatMap((scenario) => [...scenario.defs]),
+  ) as SoundDefinition[]
+}
+
+/** Accès O(1) par id pour le moteur audio (source de vérité unique). */
+export const SOUND_DEF_BY_ID: ReadonlyMap<string, SoundDefinition> = new Map(
+  collectAllSoundDefinitions().map((d) => [d.id, d]),
+)
+
+export function getSoundDefinitionById(id: string): SoundDefinition | undefined {
+  return SOUND_DEF_BY_ID.get(id)
+}
 
 export const REGIONS: { id: Region; label: string; flag: string }[] = [
   { id: 'america', label: 'AMERICA', flag: '🇺🇸' },

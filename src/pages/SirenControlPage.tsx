@@ -11,6 +11,14 @@ import { useHaptic } from '../hooks/useHaptic'
 import { useSirenStore } from '../store/sirenStore'
 import { getScenario } from '../utils/sirenConfig'
 
+function isAudioDebugEnabled() {
+  return (
+    (typeof window !== 'undefined' && window.location.search.includes('debug=1')) ||
+    import.meta.env.DEV ||
+    import.meta.env.VITE_SHOW_AUDIO_DEBUG === 'true'
+  )
+}
+
 export function SirenControlPage() {
   const { region, emergency } = useParams()
   const scenario = getScenario(region, emergency)
@@ -35,19 +43,22 @@ export function SirenControlPage() {
     void ensureReady().then(() => bumpHornUi((n) => n + 1))
   }, [ensureReady])
 
+  const isDebug = isAudioDebugEnabled()
+
+  useEffect(() => {
+    if (!isDebug) return
+    const timer = window.setInterval(() => {
+      setDebugSnapshot(getAudioDebug())
+    }, 120)
+    return () => window.clearInterval(timer)
+  }, [getAudioDebug, isDebug])
+
   const hasPoliceHorn = audioEngine.hasPoliceHorn()
   const hasAirHorn = audioEngine.hasAirHorn()
 
   if (!scenario) return <Navigate to="/" replace />
 
   const activeNames = scenario.defs.filter((d) => active[d.id]).map((d) => d.label)
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setDebugSnapshot(getAudioDebug())
-    }, 120)
-    return () => window.clearInterval(timer)
-  }, [getAudioDebug])
 
   const onHoldStart = async (soundId: string, e: PointerEvent<HTMLButtonElement>) => {
     const sound = scenario.defs.find((def) => def.id === soundId)
@@ -157,7 +168,14 @@ export function SirenControlPage() {
         <AudioVisualizer />
         <VolumeSlider value={masterVolume} onChange={setMasterVolume} />
         <ActiveSounds names={activeNames} />
-        <AudioDebugPanel voices={debugSnapshot.voices} logs={debugSnapshot.logs} />
+        {isDebug ? (
+          <AudioDebugPanel
+            voices={debugSnapshot.voices}
+            logs={debugSnapshot.logs}
+            masterPostLimiterRms={debugSnapshot.masterPostLimiterRms}
+            masterPostLimiterDbFs={debugSnapshot.masterPostLimiterDbFs}
+          />
+        ) : null}
       </div>
     </PanelLayout>
   )
