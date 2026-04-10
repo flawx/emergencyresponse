@@ -5,6 +5,7 @@ Document de travail pour améliorer le réalisme des klaxons / air horns dans `c
 ## État d’implémentation (moteur)
 
 - **Fait (Phases A, B, B2)** : variante `HornVariant` + `getHornVoiceConfig` / `resolveHornVariant`, bus **`hornMix`** avec enveloppe dédiée, formes d’onde par type (saw/square/saw feu ; square police ; triangle standard), **plus de drift LFO** sur les horns, bruit de fond routé vers `hornMix`, **burst air** (bruit blanc court + bandpass + enveloppe) pour `usFireAir` uniquement.
+- **Police US** : chemin **sample** prioritaire — fichier `public/audio/horn-police-us.wav` ou `.mp3`, boucle `AudioBufferSourceNode` → gain → bandpass léger → `hornMix`. Si absent : **fallback synthèse** (bruit + saturation + filtre + LFO sur fréquence du BP). Voir `public/audio/README.md`.
 - **À faire (Phase C)** : alternance ou modulation police via automation Web Audio, `PeriodicWave` asymétrique optionnel, compresseur léger sur `hornMix`.
 
 ---
