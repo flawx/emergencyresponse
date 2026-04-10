@@ -65,7 +65,10 @@ class AudioEngine {
   private compressor?: DynamicsCompressorNode
   private finalLimiter?: DynamicsCompressorNode
   private saturator?: WaveShaperNode
+  /** Tap après le limiteur final (viz, RMS produit). Voir `docs/audio-engine.md`. */
   private analyser?: AnalyserNode
+  /** Tap debug : après `masterGain`, avant présence / shelf / DC / limiteur. */
+  private analyserDebugPreFinalEq?: AnalyserNode
   private dcBlocker?: BiquadFilterNode
   private masterEqHighpass180?: BiquadFilterNode
   private masterEqPresence?: BiquadFilterNode
@@ -103,6 +106,8 @@ class AudioEngine {
     this.masterGain.gain.value = 0.92
     this.analyser = this.context.createAnalyser()
     this.analyser.fftSize = 128
+    this.analyserDebugPreFinalEq = this.context.createAnalyser()
+    this.analyserDebugPreFinalEq.fftSize = 128
     this.masterEqHighpass180 = this.context.createBiquadFilter()
     this.masterEqHighpass180.type = 'highpass'
     this.masterEqHighpass180.frequency.value = 180
@@ -133,12 +138,13 @@ class AudioEngine {
     this.saturator.connect(this.compressor)
     this.compressor.connect(this.masterMakeupGain)
     this.masterMakeupGain.connect(this.masterGain)
-    this.masterGain.connect(this.analyser)
     this.masterGain.connect(this.masterEqPresence)
+    this.masterGain.connect(this.analyserDebugPreFinalEq)
     this.masterEqPresence.connect(this.masterEqHighShelf)
     this.masterEqHighShelf.connect(this.dcBlocker)
     this.dcBlocker.connect(this.finalLimiter)
     this.finalLimiter.connect(this.context.destination)
+    this.finalLimiter.connect(this.analyser)
     this.logDestinationRouting()
     this.noiseBuffer = this.buildNoiseBuffer()
     this.initialized = true
@@ -151,6 +157,11 @@ class AudioEngine {
 
   getAnalyser() {
     return this.analyser
+  }
+
+  /** Spectre / RMS avant EQ finale + DC + limiteur (debug uniquement). */
+  getDebugAnalyserPreFinalEq() {
+    return this.analyserDebugPreFinalEq ?? null
   }
 
   getDebugSnapshot() {
@@ -1282,7 +1293,8 @@ class AudioEngine {
   private logDestinationRouting() {
     const routing = [
       'Audio route: source -> mixGain -> preEQ(HP180) -> preGain -> saturator -> compressor -> makeupGain -> masterGain -> presenceEQ -> highShelf -> DCBlocker -> limiter -> destination',
-      'Analyzer route: masterGain -> analyser (parallel, no destination)',
+      'Analyzer (product): finalLimiter -> analyser (parallel, no destination)',
+      'Analyzer (debug): masterGain -> analyserDebugPreFinalEq (parallel, no destination)',
       'Nodes connected to destination: finalLimiter only',
     ]
     routing.forEach((line) => this.logDebug(`[routing] ${line}`))
