@@ -39,7 +39,8 @@ type SoundInstance = {
   modulationNodes: AudioNode[]
   noiseSource?: AudioBufferSourceNode
   timer?: number
-  timeouts?: number[]
+  /** Timeout unique pour re-planifier l’automation infinie (évite accumulation d’ids). */
+  automationPendingTimeout?: number
   sampleSource?: AudioBufferSourceNode
   preset: SoundPreset
   mainOsc?: OscillatorNode
@@ -51,6 +52,8 @@ type SoundInstance = {
   qMaxFreq?: number
   qHoldActive?: boolean
   qCycleMs?: number
+  /** Arrêt de la re-planification d’automation (infinie) sans retirer la voix du map avant la fin du fade. */
+  automationCancelled?: boolean
   debug: DebugVoice
 }
 
@@ -81,6 +84,8 @@ class AudioEngine {
   private frDebugIsolation = false
   /** Cible de mesure documentée (RMS post-limiteur, voix seule) — calage via `staticCompensation`, pas d’apprentissage runtime. */
   private readonly loudnessTargetDb = -11
+  /** Re-planifier l’automation avant la fin du segment (évite trous si le thread JS retarde). */
+  private readonly automationRescheduleLeadSec = 0.2
 
   async init() {
     if (this.initialized) return
@@ -320,6 +325,25 @@ class AudioEngine {
     }
   }
 
+  /** Re-planifie `run` avant `audioTimelineEnd` (horloge audio), avec marge anti-lag JS. */
+  private scheduleNextAutomationWindow(instance: SoundInstance, audioTimelineEnd: number, run: () => void) {
+    if (!this.context) return
+    if (instance.automationPendingTimeout != null) {
+      window.clearTimeout(instance.automationPendingTimeout)
+      instance.automationPendingTimeout = undefined
+    }
+    const ctx = this.context
+    const delayMs = Math.max(
+      35,
+      (audioTimelineEnd - this.automationRescheduleLeadSec - ctx.currentTime) * 1000,
+    )
+    instance.automationPendingTimeout = window.setTimeout(() => {
+      instance.automationPendingTimeout = undefined
+      if (instance.automationCancelled || !this.active.has(instance.id) || !this.context) return
+      run()
+    }, delayMs)
+  }
+
   private normalizePresetVolume(kind: SoundKind, explicitGain?: number) {
     const target = this.getUnifiedGain(kind)
     const staticCompensation: Partial<Record<SoundKind, number>> = {
@@ -348,6 +372,12 @@ class AudioEngine {
     if (!this.context) return
     const instance = this.active.get(id)
     if (!instance) return
+
+    instance.automationCancelled = true
+    if (instance.automationPendingTimeout != null) {
+      window.clearTimeout(instance.automationPendingTimeout)
+      instance.automationPendingTimeout = undefined
+    }
 
     const now = this.context.currentTime
     instance.gainNode.gain.cancelScheduledValues(now)
@@ -390,7 +420,6 @@ class AudioEngine {
         node.disconnect()
       })
       if (instance.timer) window.clearInterval(instance.timer)
-      instance.timeouts?.forEach((id) => window.clearTimeout(id))
       instance.voiceInput.disconnect()
       instance.gainNode.disconnect()
       this.active.delete(id)
@@ -622,40 +651,46 @@ class AudioEngine {
     const cycleSec = (noteMs * 3) / 1000 + 1.1
     const attack = 0.005
     const endFade = 0.02
-    const horizonCycles = 220
     const start = this.context.currentTime + 0.01
-    for (let i = 0; i < horizonCycles; i += 1) {
-      const cycleStart = start + i * cycleSec
-      const t2 = cycleStart + noteMs / 1000
-      const t3 = cycleStart + (noteMs * 2) / 1000
-      const t4 = cycleStart + (noteMs * 3) / 1000
-      // Hard reset of gain automation timeline at each cycle start.
-      gate.gain.cancelScheduledValues(cycleStart)
-      gate.gain.setValueAtTime(0, cycleStart)
-      const f1 = this.clampFrequencyHz(420 + this.nextJitter(instance, 1))
-      const f2 = this.clampFrequencyHz(516 + this.nextJitter(instance, 1))
-      const f3 = this.clampFrequencyHz(420 + this.nextJitter(instance, 1))
-      oscA.frequency.setValueAtTime(f1, cycleStart)
-      oscA.frequency.setValueAtTime(f2, t2)
-      oscA.frequency.setValueAtTime(f3, t3)
-      oscA.frequency.setValueAtTime(f3, t4)
+    const cyclesPerChunk = 24
 
-      // Keep continuous signal across the 3 notes; only light anti-click shaping.
-      gate.gain.setValueAtTime(0, cycleStart)
-      gate.gain.linearRampToValueAtTime(1, cycleStart + attack)
-      gate.gain.setValueAtTime(1, t4)
-      gate.gain.linearRampToValueAtTime(0, t4 + endFade)
+    const runChunk = (firstCycleIndex: number, cycleStart: number) => {
+      if (!this.context || instance.automationCancelled || !this.active.has(instance.id)) return
+      let cs = cycleStart
+      for (let j = 0; j < cyclesPerChunk; j += 1) {
+        const i = firstCycleIndex + j
+        const t2 = cs + noteMs / 1000
+        const t3 = cs + (noteMs * 2) / 1000
+        const t4 = cs + (noteMs * 3) / 1000
+        gate.gain.cancelScheduledValues(cs)
+        gate.gain.setValueAtTime(0, cs)
+        const f1 = this.clampFrequencyHz(420 + this.nextJitter(instance, 1))
+        const f2 = this.clampFrequencyHz(516 + this.nextJitter(instance, 1))
+        const f3 = this.clampFrequencyHz(420 + this.nextJitter(instance, 1))
+        oscA.frequency.setValueAtTime(f1, cs)
+        oscA.frequency.setValueAtTime(f2, t2)
+        oscA.frequency.setValueAtTime(f3, t3)
+        oscA.frequency.setValueAtTime(f3, t4)
 
-      const cycleEnd = cycleStart + cycleSec
-      gate.gain.setValueAtTime(0, cycleEnd)
-      if (i < 8 || i % 20 === 0) {
-        this.logDebug(
-          `[three-tone] cycle=${i} f=[${f1.toFixed(1)},${f2.toFixed(1)},${f3.toFixed(1)}] fade=${endFade.toFixed(3)}s pause=${(
-            cycleEnd - t4
-          ).toFixed(3)}s`,
-        )
+        gate.gain.setValueAtTime(0, cs)
+        gate.gain.linearRampToValueAtTime(1, cs + attack)
+        gate.gain.setValueAtTime(1, t4)
+        gate.gain.linearRampToValueAtTime(0, t4 + endFade)
+
+        const cycleEnd = cs + cycleSec
+        gate.gain.setValueAtTime(0, cycleEnd)
+        if (i < 8 || i % 20 === 0) {
+          this.logDebug(
+            `[three-tone] cycle=${i} f=[${f1.toFixed(1)},${f2.toFixed(1)},${f3.toFixed(1)}] fade=${endFade.toFixed(3)}s pause=${(
+              cycleEnd - t4
+            ).toFixed(3)}s`,
+          )
+        }
+        cs = cycleEnd
       }
+      this.scheduleNextAutomationWindow(instance, cs, () => runChunk(firstCycleIndex + cyclesPerChunk, cs))
     }
+    runChunk(0, start)
     instance.debug.frequencyHz = 700
   }
 
@@ -673,15 +708,8 @@ class AudioEngine {
     instance.debug.frequencyHz = freqs[0] ?? 700
     instance.debug.modulation = 'two-tone-fr'
 
-    const start = this.context!.currentTime + 0.01
     const step = everyMs / 1000
-    const horizonSteps = 600
-    for (let i = 0; i < horizonSteps; i += 1) {
-      const idx = i % freqs.length
-      const f = this.clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 700) + this.nextJitter(instance, 1))
-      oscA.frequency.setValueAtTime(f, start + i * step)
-      if (i < 8) this.logDebug(`[two-tone] step=${i} f=${f.toFixed(2)}Hz t=${(i * step).toFixed(3)}s`)
-    }
+    this.scheduleFrTwoToneFrequencyLoop(instance, oscA, freqs, step, 'two-tone', 700)
     instance.debug.frequencyHz = freqs[0] ?? 700
   }
 
@@ -705,16 +733,41 @@ class AudioEngine {
     instance.debug.frequencyHz = freqs[0] ?? 800
     instance.debug.modulation = modulation
 
-    const start = this.context!.currentTime + 0.01
     const step = everyMs / 1000
-    const horizonSteps = 600
-    for (let i = 0; i < horizonSteps; i += 1) {
-      const idx = i % freqs.length
-      const f = this.clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 800) + this.nextJitter(instance, 1))
-      oscA.frequency.setValueAtTime(f, start + i * step)
-      if (i < 8) this.logDebug(`[two-tone-police] step=${i} f=${f.toFixed(2)}Hz t=${(i * step).toFixed(3)}s`)
-    }
+    this.scheduleFrTwoToneFrequencyLoop(instance, oscA, freqs, step, 'two-tone-police', 800)
     instance.debug.frequencyHz = freqs[0] ?? 800
+  }
+
+  /** Deux tons FR : steps infinis, re-planifiés sur l’horloge audio. */
+  private scheduleFrTwoToneFrequencyLoop(
+    instance: SoundInstance,
+    oscA: OscillatorNode,
+    freqs: number[],
+    stepSec: number,
+    logPrefix: string,
+    fallbackHz: number,
+  ) {
+    if (!this.context) return
+    const start = this.context.currentTime + 0.01
+    const stepsPerChunk = 96
+    let nextT = start
+    let stepIndex = 0
+
+    const runChunk = () => {
+      if (!this.context || instance.automationCancelled || !this.active.has(instance.id)) return
+      for (let k = 0; k < stepsPerChunk; k += 1) {
+        const idx = stepIndex % freqs.length
+        const f = this.clampFrequencyHz((freqs[idx] ?? freqs[0] ?? fallbackHz) + this.nextJitter(instance, 1))
+        oscA.frequency.setValueAtTime(f, nextT)
+        if (stepIndex < 8) {
+          this.logDebug(`[${logPrefix}] step=${stepIndex} f=${f.toFixed(2)}Hz t=${(nextT - start).toFixed(3)}s`)
+        }
+        nextT += stepSec
+        stepIndex += 1
+      }
+      this.scheduleNextAutomationWindow(instance, nextT, runChunk)
+    }
+    runChunk()
   }
 
   private createFrTwoToneVoice(
@@ -1001,26 +1054,32 @@ class AudioEngine {
     const minHz = 500
     const maxHz = 1500
     const baseCycleSec = 4
-    const horizonCycles = 90
+    const cyclesPerChunk = 10
     const start = this.context.currentTime + 0.01
     for (const c of carriers) {
       c.frequency.cancelScheduledValues(start)
       c.frequency.setValueAtTime(minHz, start)
     }
-    let cycleStart = start
-    for (let i = 0; i < horizonCycles; i += 1) {
-      const cycleSec = baseCycleSec * (1 + this.nextJitter(instance, 3) * 0.009)
-      const riseSec = cycleSec * 0.72
-      const peakAt = cycleStart + riseSec
-      const endAt = cycleStart + cycleSec
-      for (const c of carriers) {
-        c.frequency.setValueAtTime(minHz, cycleStart)
-        c.frequency.exponentialRampToValueAtTime(maxHz, peakAt)
-        c.frequency.exponentialRampToValueAtTime(minHz, endAt)
+
+    const runChunk = (cycleStart: number) => {
+      if (!this.context || instance.automationCancelled || !this.active.has(instance.id)) return
+      let t = cycleStart
+      for (let i = 0; i < cyclesPerChunk; i += 1) {
+        const cycleSec = baseCycleSec * (1 + this.nextJitter(instance, 3) * 0.009)
+        const riseSec = cycleSec * 0.72
+        const peakAt = t + riseSec
+        const endAt = t + cycleSec
+        for (const c of carriers) {
+          c.frequency.setValueAtTime(minHz, t)
+          c.frequency.exponentialRampToValueAtTime(maxHz, peakAt)
+          c.frequency.exponentialRampToValueAtTime(minHz, endAt)
+        }
+        t = endAt
       }
-      cycleStart = endAt
+      this.scheduleNextAutomationWindow(instance, t, () => runChunk(t))
     }
-    instance.debug.modulation = 'wail-asymmetric-exp-jitter'
+    runChunk(start)
+    instance.debug.modulation = 'wail-asymmetric-exp-jitter-loop'
   }
 
   /** Yelp : rampe continue 900↔1600 Hz, cycle court, sans LFO binaire. */
@@ -1029,22 +1088,28 @@ class AudioEngine {
     const minHz = 900
     const maxHz = 1600
     const baseCycleSec = 0.25
-    const horizonCycles = 720
+    const cyclesPerChunk = 48
     const start = this.context.currentTime + 0.02
     carrier.frequency.cancelScheduledValues(start)
     carrier.frequency.setValueAtTime(minHz, start)
-    let t = start
-    for (let i = 0; i < horizonCycles; i += 1) {
-      const cycleSec = baseCycleSec * (1 + this.nextJitter(instance, 3) * 0.012)
-      const riseSec = cycleSec * 0.4
-      const tPeak = t + riseSec
-      const tEnd = t + cycleSec
-      carrier.frequency.setValueAtTime(minHz, t)
-      carrier.frequency.exponentialRampToValueAtTime(maxHz, tPeak)
-      carrier.frequency.exponentialRampToValueAtTime(minHz, tEnd)
-      t = tEnd
+
+    const runChunk = (t0: number) => {
+      if (!this.context || instance.automationCancelled || !this.active.has(instance.id)) return
+      let t = t0
+      for (let i = 0; i < cyclesPerChunk; i += 1) {
+        const cycleSec = baseCycleSec * (1 + this.nextJitter(instance, 3) * 0.012)
+        const riseSec = cycleSec * 0.4
+        const tPeak = t + riseSec
+        const tEnd = t + cycleSec
+        carrier.frequency.setValueAtTime(minHz, t)
+        carrier.frequency.exponentialRampToValueAtTime(maxHz, tPeak)
+        carrier.frequency.exponentialRampToValueAtTime(minHz, tEnd)
+        t = tEnd
+      }
+      this.scheduleNextAutomationWindow(instance, t, () => runChunk(t))
     }
-    instance.debug.modulation = 'yelp-continuous-exp'
+    runChunk(start)
+    instance.debug.modulation = 'yelp-continuous-exp-loop'
   }
 
   private makeWailBiasCurve() {

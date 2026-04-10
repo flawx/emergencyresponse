@@ -17,7 +17,8 @@ Ce document verrouille les règles d’implémentation pour le graphe Web Audio 
 ## Automation longue durée
 
 - Reschedule basé sur **`audioContext.currentTime`** (horloge audio), pas sur une accumulation de temps JS seule.
-- **Marge de sécurité** avant la fin d’un segment planifié (typ. **0,1–0,3 s**) pour ré-enfiler la suite, afin d’éviter trous / glitches si le thread JS est en retard.
+- **Marge de sécurité** avant la fin d’un segment planifié (**0,2 s** dans le code, plage recommandée **0,1–0,3 s**) pour ré-enfiler la suite, afin d’éviter trous / glitches si le thread JS est en retard.
+- Au **`stop`**, `automationCancelled` + annulation du timeout en attente pour ne pas reprendre après fade.
 
 ## Analyseur
 
