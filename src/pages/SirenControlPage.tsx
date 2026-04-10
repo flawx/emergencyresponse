@@ -6,6 +6,7 @@ import { AudioVisualizer } from '../components/AudioVisualizer'
 import { PanelLayout } from '../components/PanelLayout'
 import { SirenButton } from '../components/SirenButton'
 import { VolumeSlider } from '../components/VolumeSlider'
+import { audioEngine } from '../audio/engine'
 import { useHaptic } from '../hooks/useHaptic'
 import { useSirenStore } from '../store/sirenStore'
 import { getScenario } from '../utils/sirenConfig'
@@ -24,9 +25,18 @@ export function SirenControlPage() {
   const setMasterVolume = useSirenStore((s) => s.setMasterVolume)
   const updateHoldPressure = useSirenStore((s) => s.updateHoldPressure)
   const getAudioDebug = useSirenStore((s) => s.getAudioDebug)
+  const ensureReady = useSirenStore((s) => s.ensureReady)
+  const [, bumpHornUi] = useState(0)
   const [debugSnapshot, setDebugSnapshot] = useState(getAudioDebug())
   const qsirenHoldStartedAt = useRef<number | null>(null)
   const qsirenSuppressClick = useRef(false)
+
+  useEffect(() => {
+    void ensureReady().then(() => bumpHornUi((n) => n + 1))
+  }, [ensureReady])
+
+  const hasPoliceHorn = audioEngine.hasPoliceHorn()
+  const hasAirHorn = audioEngine.hasAirHorn()
 
   if (!scenario) return <Navigate to="/" replace />
 
@@ -100,6 +110,16 @@ export function SirenControlPage() {
               </div>
             )
           }
+          const hornSampleMissing =
+            (sound.id === 'amer-police-horn' && !hasPoliceHorn) ||
+            (sound.id === 'amer-fire-airhorn' && !hasAirHorn)
+          const hornDisabled = hornSampleMissing && sound.mode === 'hold' && sound.kind === 'horn'
+          const hornTooltip = hornSampleMissing
+            ? sound.id === 'amer-police-horn'
+              ? 'Police horn sample missing — add public/audio/horn-police-us.wav (or .mp3)'
+              : 'Air horn sample missing — add public/audio/horn-fire-us.wav (or .mp3)'
+            : undefined
+
           return (
             <SirenButton
               key={sound.id}
@@ -107,7 +127,10 @@ export function SirenControlPage() {
               active={isActive}
               hold={sound.mode === 'hold'}
               danger={isStop}
+              disabled={hornDisabled}
+              title={hornTooltip}
               onClick={() => {
+                if (hornDisabled) return
                 if (sound.mode === 'toggle') {
                   vibrate()
                   void toggleSound(sound, region, emergency)
@@ -118,7 +141,7 @@ export function SirenControlPage() {
                 }
               }}
               onHoldStart={
-                sound.mode === 'hold'
+                sound.mode === 'hold' && !hornDisabled
                   ? (e) => {
                       void onHoldStart(sound.id, e)
                     }

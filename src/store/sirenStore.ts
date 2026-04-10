@@ -150,7 +150,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       setSound(next, sound.id, true)
       return { active: next }
     })
-    audioEngine.play(sound.id, { kind: sound.kind, gain: 0.42 })
+    audioEngine.play(sound.id, { kind: sound.kind })
   },
 
   endHold: (soundId) => {

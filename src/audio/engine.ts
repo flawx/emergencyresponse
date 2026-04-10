@@ -85,11 +85,15 @@ class AudioEngine {
   private policeHornBuffer?: AudioBuffer
   private airHornBuffer?: AudioBuffer
   private frDebugIsolation = false
+  /** Logs console (`console.debug`) : désactivé sauf `?debugAudio=1` dans l’URL au moment du `init()`. */
+  private DEBUG_AUDIO = false
   /** Cible de mesure documentée (RMS post-limiteur, voix seule) — calage via `staticCompensation`, pas d’apprentissage runtime. */
   private readonly loudnessTargetDb = -11
 
   async init() {
     if (this.initialized) return
+    this.DEBUG_AUDIO =
+      typeof window !== 'undefined' && window.location.search.includes('debugAudio=1')
     this.context = new AudioContext({ latencyHint: 'interactive' })
     this.mixGain = this.context.createGain()
     this.mixGain.gain.value = 1
@@ -205,6 +209,14 @@ class AudioEngine {
 
   getAnalyser() {
     return this.analyser
+  }
+
+  hasPoliceHorn(): boolean {
+    return !!this.policeHornBuffer
+  }
+
+  hasAirHorn(): boolean {
+    return !!this.airHornBuffer
   }
 
   /** Spectre / RMS avant EQ finale + DC + limiteur (debug uniquement). */
@@ -933,7 +945,6 @@ class AudioEngine {
 
   private createWailUnified(instance: SoundInstance, _options?: WailYelpUnifiedOptions) {
     if (!this.context) return
-    console.log('[WAIL] unified version used')
     const saw = this.context.createOscillator()
     saw.type = 'sawtooth'
     saw.frequency.value = 500
@@ -974,13 +985,11 @@ class AudioEngine {
     instance.debug.modulation = 'wail-saw-sine-organic'
     this.attachGainWobble(instance, instance.gainNode.gain, 0.1, 0.02)
     this.attachNoiseLayer(instance, 0.009)
-    this.applyWailYelpVoicing(instance)
     this.applyAsymmetricWailAutomation(instance, [saw, sine])
   }
 
   private createYelpUnified(instance: SoundInstance, _options?: WailYelpUnifiedOptions) {
     if (!this.context) return
-    console.log('[YELP] unified version used')
     const carrier = this.context.createOscillator()
     carrier.type = 'sawtooth'
     carrier.frequency.value = 900
@@ -993,7 +1002,6 @@ class AudioEngine {
     this.attachAnalogDrift(instance, carrier, 0.06, 3.5)
     this.attachGainWobble(instance, instance.gainNode.gain, 0.12, 0.022)
     this.attachNoiseLayer(instance, 0.009)
-    this.applyWailYelpVoicing(instance)
     this.applyContinuousYelpAutomation(instance, carrier)
   }
 
@@ -1028,39 +1036,6 @@ class AudioEngine {
     this.attachAnalogDrift(instance, carrier, 0.05, 3)
     this.attachGainWobble(instance, instance.gainNode.gain, 0.1, 0.02)
     this.attachNoiseLayer(instance, 0.007)
-  }
-
-  private applyWailYelpVoicing(instance: SoundInstance) {
-    if (!this.context) return
-    try {
-      instance.voiceInput.disconnect()
-    } catch {
-      // no-op
-    }
-    const presence = this.context.createBiquadFilter()
-    presence.type = 'peaking'
-    presence.frequency.value = 2000
-    presence.Q.value = 0.95
-    presence.gain.value = 5
-    const highShelf = this.context.createBiquadFilter()
-    highShelf.type = 'highshelf'
-    highShelf.frequency.value = 4200
-    highShelf.Q.value = 0.7
-    highShelf.gain.value = 8.5
-    const sirenCompressor = this.context.createDynamicsCompressor()
-    sirenCompressor.threshold.value = -22
-    sirenCompressor.knee.value = 10
-    sirenCompressor.ratio.value = 6.5
-    sirenCompressor.attack.value = 0.002
-    sirenCompressor.release.value = 0.055
-    const finalBoost = this.context.createGain()
-    finalBoost.gain.value = 1.55
-    instance.voiceInput.connect(presence)
-    presence.connect(highShelf)
-    highShelf.connect(sirenCompressor)
-    sirenCompressor.connect(finalBoost)
-    finalBoost.connect(instance.gainNode)
-    instance.modulationNodes.push(presence, highShelf, sirenCompressor, finalBoost)
   }
 
   private applyAsymmetricWailAutomation(instance: SoundInstance, carriers: OscillatorNode[]) {
@@ -1354,7 +1329,9 @@ class AudioEngine {
   private logDebug(message: string) {
     this.debugLog.push(`${new Date().toISOString()} ${message}`)
     if (this.debugLog.length > 100) this.debugLog.shift()
-    console.debug(message)
+    if (this.DEBUG_AUDIO) {
+      console.debug(message)
+    }
   }
 
   private logDestinationRouting() {
