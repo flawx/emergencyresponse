@@ -10,6 +10,7 @@ export type SoundKind =
   | 'twoToneA'
   | 'twoToneM'
   | 'twoTone'
+  | 'twoToneUmh'
   | 'threeTone'
   | 'qsiren'
 
@@ -140,25 +141,32 @@ export const SIREN_CONFIG = {
     ambulance: cfg('europe', 'ambulance', [
       { id: 'eu-ambu-two-tone', label: 'TWO-TONE', mode: 'toggle', kind: 'twoTone' },
       {
+        id: 'eu-ambu-umh',
+        label: 'UMH',
+        mode: 'toggle',
+        kind: 'twoToneUmh',
+        exclusiveWith: ['eu-ambu-two-tone', 'eu-ambu-three-tone', 'eu-ambu-wail', 'eu-ambu-yelp'],
+      },
+      {
         id: 'eu-ambu-three-tone',
         label: 'THREE-TONE',
         mode: 'toggle',
         kind: 'threeTone',
-        exclusiveWith: ['eu-ambu-two-tone', 'eu-ambu-wail', 'eu-ambu-yelp'],
+        exclusiveWith: ['eu-ambu-two-tone', 'eu-ambu-umh', 'eu-ambu-wail', 'eu-ambu-yelp'],
       },
       {
         id: 'eu-ambu-wail',
         label: 'WAIL',
         mode: 'toggle',
         kind: 'wail',
-        exclusiveWith: ['eu-ambu-three-tone'],
+        exclusiveWith: ['eu-ambu-three-tone', 'eu-ambu-umh'],
       },
       {
         id: 'eu-ambu-yelp',
         label: 'YELP',
         mode: 'toggle',
         kind: 'yelp',
-        exclusiveWith: ['eu-ambu-three-tone'],
+        exclusiveWith: ['eu-ambu-three-tone', 'eu-ambu-umh'],
       },
       { id: 'eu-ambu-horn', label: 'HORN', mode: 'hold', kind: 'horn' },
       { id: 'eu-ambu-stop', label: 'STOP', mode: 'stop', kind: 'horn' },

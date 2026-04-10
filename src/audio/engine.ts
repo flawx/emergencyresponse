@@ -76,7 +76,7 @@ class AudioEngine {
     this.mixGain = this.context.createGain()
     this.mixGain.gain.value = 1
     this.saturator = this.context.createWaveShaper()
-    this.saturator.curve = this.makeDistortionCurve(18)
+    this.saturator.curve = this.makeDistortionCurve(4)
     this.saturator.oversample = '4x'
     this.compressor = this.context.createDynamicsCompressor()
     this.compressor.threshold.value = -10
@@ -101,8 +101,7 @@ class AudioEngine {
     this.dcBlocker.frequency.value = 20
     this.dcBlocker.Q.value = 0.7
 
-    this.mixGain.connect(this.saturator)
-    this.saturator.connect(this.compressor)
+    this.mixGain.connect(this.compressor)
     this.compressor.connect(this.masterGain)
     this.masterGain.connect(this.analyser)
     this.masterGain.connect(this.masterEqHighpass120)
@@ -272,6 +271,8 @@ class AudioEngine {
         return 0.4
       case 'threeTone':
         return 0.4
+      case 'twoToneUmh':
+        return 0.4
       case 'horn':
         return 0.34
       default:
@@ -426,20 +427,31 @@ class AudioEngine {
         break
       case 'twoToneA':
         if (instance.id.includes('eu-police')) {
-          this.createPoliceFrTwoTone(instance, [600, 800], 520, 'twoToneA-police-fr')
+          this.createPoliceFrTwoTone(instance, [435, 580], 580, 'twoToneA-police-fr')
+          break
+        }
+        if (instance.id.includes('eu-fire')) {
+          this.createTwoToneFr(instance, [435, 488], 1200)
           break
         }
         this.createTwoToneFr(instance, [700, 900], 700)
         break
       case 'twoToneM':
         if (instance.id.includes('eu-police')) {
-          this.createPoliceFrTwoTone(instance, [600, 800], 240, 'twoToneM-police-fr')
+          this.createPoliceFrTwoTone(instance, [435, 580], 520, 'twoToneM-police-fr')
+          break
+        }
+        if (instance.id.includes('eu-fire')) {
+          this.createTwoToneFr(instance, [435, 488], 950)
           break
         }
         this.createTwoToneFr(instance, [700, 900], 700)
         break
       case 'twoTone':
-        this.createTwoToneFr(instance, [700, 960], 700)
+        this.createTwoToneFr(instance, [420, 516], 560)
+        break
+      case 'twoToneUmh':
+        this.createTwoToneFr(instance, [435, 651], 560)
         break
       case 'horn':
       default:
@@ -510,15 +522,14 @@ class AudioEngine {
       withDrift: !this.frDebugIsolation,
       withWobble: false,
       withNoise: false,
-      // Isolation test: bypass downstream processors to validate true silence.
-      withEq: false,
-      withGateCompressor: false,
+      withEq: true,
+      withGateCompressor: true,
     })
     if (!voice) return
     const { oscA, gate } = voice
     instance.mainOsc = oscA
     const noteMs = 180
-    const cycleSec = (noteMs * 3) / 1000 + 1.0
+    const cycleSec = (noteMs * 3) / 1000 + 1.1
     const attack = 0.005
     const endFade = 0.02
     const horizonCycles = 220
@@ -531,9 +542,9 @@ class AudioEngine {
       // Hard reset of gain automation timeline at each cycle start.
       gate.gain.cancelScheduledValues(cycleStart)
       gate.gain.setValueAtTime(0, cycleStart)
-      const f1 = this.clampFrequencyHz(700 + this.nextJitter(instance, 3))
-      const f2 = this.clampFrequencyHz(900 + this.nextJitter(instance, 3))
-      const f3 = this.clampFrequencyHz(700 + this.nextJitter(instance, 3))
+      const f1 = this.clampFrequencyHz(420 + this.nextJitter(instance, 1))
+      const f2 = this.clampFrequencyHz(516 + this.nextJitter(instance, 1))
+      const f3 = this.clampFrequencyHz(420 + this.nextJitter(instance, 1))
       oscA.frequency.setValueAtTime(f1, cycleStart)
       oscA.frequency.setValueAtTime(f2, t2)
       oscA.frequency.setValueAtTime(f3, t3)
@@ -561,7 +572,7 @@ class AudioEngine {
   private createTwoToneFr(instance: SoundInstance, freqs: number[], everyMs: number) {
     const voice = this.createFrTwoToneVoice(instance, freqs[0] ?? 700, undefined, {
       withDrift: !this.frDebugIsolation,
-      withWobble: !this.frDebugIsolation,
+      withWobble: false,
       withNoise: false,
       withEq: true,
       withGateCompressor: true,
@@ -577,7 +588,7 @@ class AudioEngine {
     const horizonSteps = 600
     for (let i = 0; i < horizonSteps; i += 1) {
       const idx = i % freqs.length
-      const f = this.clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 700) + this.nextJitter(instance, 5))
+      const f = this.clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 700) + this.nextJitter(instance, 1))
       oscA.frequency.setValueAtTime(f, start + i * step)
       if (i < 8) this.logDebug(`[two-tone] step=${i} f=${f.toFixed(2)}Hz t=${(i * step).toFixed(3)}s`)
     }
@@ -601,8 +612,7 @@ class AudioEngine {
     instance.oscillators.push(oscA)
     instance.debug.frequencyHz = freqs[0] ?? 800
     instance.debug.modulation = modulation
-    if (!this.frDebugIsolation) this.attachAnalogDrift(instance, oscA, 0.05, 3)
-    if (!this.frDebugIsolation) this.attachGainWobble(instance, instance.gainNode.gain, 0.8, 0.02)
+    if (!this.frDebugIsolation) this.attachAnalogDrift(instance, oscA, 0.05, 1.5)
     const policeCompressor = this.context.createDynamicsCompressor()
     policeCompressor.threshold.value = -32
     policeCompressor.knee.value = 14
@@ -623,7 +633,7 @@ class AudioEngine {
     const horizonSteps = 600
     for (let i = 0; i < horizonSteps; i += 1) {
       const idx = i % freqs.length
-      const f = this.clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 800) + this.nextJitter(instance, 5))
+      const f = this.clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 800) + this.nextJitter(instance, 1))
       oscA.frequency.setValueAtTime(f, start + i * step)
       if (i < 8) this.logDebug(`[two-tone-police] step=${i} f=${f.toFixed(2)}Hz t=${(i * step).toFixed(3)}s`)
     }
@@ -693,7 +703,7 @@ class AudioEngine {
     postGate.connect(instance.gainNode)
     oscA.start(startAt ?? this.context.currentTime)
     instance.oscillators.push(oscA)
-    if (withDrift) this.attachAnalogDrift(instance, oscA, 0.05, 3)
+    if (withDrift) this.attachAnalogDrift(instance, oscA, 0.05, 1.5)
     if (withWobble) this.attachGainWobble(instance, instance.gainNode.gain, 0.75, 0.028)
     if (withNoise) this.attachNoiseLayer(instance, noiseGain)
     return { oscA, gate }
@@ -723,7 +733,7 @@ class AudioEngine {
     if (!this.context) return
     const highpass = this.context.createBiquadFilter()
     highpass.type = 'highpass'
-    highpass.frequency.value = 80
+    highpass.frequency.value = 190
     highpass.Q.value = 0.7
 
     const shaper = this.context.createWaveShaper()
@@ -732,7 +742,7 @@ class AudioEngine {
 
     const dcHighpass = this.context.createBiquadFilter()
     dcHighpass.type = 'highpass'
-    dcHighpass.frequency.value = 100
+    dcHighpass.frequency.value = 220
     dcHighpass.Q.value = 0.7
 
     const lowpass = this.context.createBiquadFilter()
@@ -791,18 +801,16 @@ class AudioEngine {
     carrier.frequency.value = baseHz
     const lfo = this.context.createOscillator()
     lfo.type = lfoType
-    lfo.frequency.value = isWail ? 1 / 6 : lfoHz
+    lfo.frequency.value = isWail ? 0 : lfoHz
     const lfoGain = this.context.createGain()
-    lfoGain.gain.value = depth
+    lfoGain.gain.value = isWail ? 0 : depth
     const lfoShaper = this.context.createWaveShaper()
     lfoShaper.curve = this.makeWailBiasCurve()
     lfo.connect(lfoShaper)
     lfoShaper.connect(lfoGain)
     lfoGain.connect(carrier.frequency)
     this.connectOscWithTimbre(instance, carrier, 3200, 10)
-    if (isWail) {
-      carrier.frequency.value = 720
-    }
+    if (isWail) carrier.frequency.value = 500
     carrier.start()
     lfo.start()
 
@@ -810,17 +818,39 @@ class AudioEngine {
     instance.oscillators.push(carrier)
     instance.lfoNodes.push(lfo)
     instance.modulationNodes.push(lfoGain, lfoShaper)
-    instance.debug.frequencyHz = isWail ? 720 : baseHz
+    instance.debug.frequencyHz = isWail ? 500 : baseHz
     instance.debug.modulation = modulationName
     this.attachAnalogDrift(instance, carrier, 0.05, 3)
     this.attachGainWobble(instance, instance.gainNode.gain, 0.1, 0.02)
     this.attachNoiseLayer(instance, 0.007)
+    if (isWail) this.applyAsymmetricWailAutomation(instance, carrier)
     if (modulationName === 'yelp-lfo' && this.compressor && this.saturator) {
       instance.gainNode.gain.value = 0.46
       this.compressor.threshold.value = -28
       this.compressor.ratio.value = 4.6
-      this.saturator.curve = this.makeDistortionCurve(24)
+      this.saturator.curve = this.makeDistortionCurve(8)
     }
+  }
+
+  private applyAsymmetricWailAutomation(instance: SoundInstance, carrier: OscillatorNode) {
+    if (!this.context) return
+    const minHz = 500
+    const maxHz = 1200
+    const cycleSec = 5
+    const riseSec = cycleSec * 0.6
+    const horizonCycles = 90
+    const start = this.context.currentTime + 0.01
+    carrier.frequency.cancelScheduledValues(start)
+    carrier.frequency.setValueAtTime(minHz, start)
+    for (let i = 0; i < horizonCycles; i += 1) {
+      const cycleStart = start + i * cycleSec
+      const peakAt = cycleStart + riseSec
+      const endAt = cycleStart + cycleSec
+      carrier.frequency.setValueAtTime(minHz, cycleStart)
+      carrier.frequency.exponentialRampToValueAtTime(maxHz, peakAt)
+      carrier.frequency.exponentialRampToValueAtTime(minHz, endAt)
+    }
+    instance.debug.modulation = 'wail-asymmetric-exp'
   }
 
   private makeWailBiasCurve() {
