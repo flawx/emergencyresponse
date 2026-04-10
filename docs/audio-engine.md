@@ -16,9 +16,8 @@ Ce document verrouille les règles d’implémentation pour le graphe Web Audio 
 
 ## Automation longue durée
 
-- Reschedule basé sur **`audioContext.currentTime`** (horloge audio), pas sur une accumulation de temps JS seule.
-- **Marge de sécurité** avant la fin d’un segment planifié (**0,2 s** dans le code, plage recommandée **0,1–0,3 s**) pour ré-enfiler la suite, afin d’éviter trous / glitches si le thread JS est en retard.
-- Au **`stop`**, `automationCancelled` + annulation du timeout en attente pour ne pas reprendre après fade.
+- Les enveloppes de fréquence / gain des sirènes concernées sont **planifiées en une fois** sur un **horizon fixe** (boucles synchrones dans `play`), entièrement sur la **timeline Web Audio** (`setValueAtTime`, rampes, etc.) — **pas** de re-planification périodique via `setTimeout` pour la modulation.
+- Limite : au-delà de l’horizon (ex. plusieurs minutes de lecture continue), la courbe ne s’étend pas ; en pratique les lectures sont plus courtes que ces horizons.
 
 ## Analyseur
 
