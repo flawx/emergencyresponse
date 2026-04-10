@@ -11,6 +11,22 @@ type DebugVoice = {
   modulation: string
 }
 
+type SilenceDiagnostics = {
+  rms: number
+  activeVoiceCount: number
+  activeVoiceIds: string[]
+  suspicious: string[]
+}
+
+type FrVoiceOptions = {
+  withDrift?: boolean
+  withWobble?: boolean
+  withNoise?: boolean
+  noiseGain?: number
+  withEq?: boolean
+  withGateCompressor?: boolean
+}
+
 type SoundInstance = {
   id: string
   gainNode: GainNode
@@ -44,11 +60,15 @@ class AudioEngine {
   private compressor?: DynamicsCompressorNode
   private saturator?: WaveShaperNode
   private analyser?: AnalyserNode
+  private dcBlocker?: BiquadFilterNode
+  private masterEqHighpass120?: BiquadFilterNode
+  private masterEqHighpass180?: BiquadFilterNode
   private initialized = false
   private samples = new Map<string, AudioBuffer>()
   private active = new Map<string, SoundInstance>()
   private debugLog: string[] = []
   private noiseBuffer?: AudioBuffer
+  private frDebugIsolation = false
 
   async init() {
     if (this.initialized) return
@@ -59,21 +79,37 @@ class AudioEngine {
     this.saturator.curve = this.makeDistortionCurve(18)
     this.saturator.oversample = '4x'
     this.compressor = this.context.createDynamicsCompressor()
-    this.compressor.threshold.value = -24
+    this.compressor.threshold.value = -10
     this.compressor.knee.value = 16
-    this.compressor.ratio.value = 3.6
-    this.compressor.attack.value = 0.006
-    this.compressor.release.value = 0.16
+    this.compressor.ratio.value = 6
+    this.compressor.attack.value = 0.003
+    this.compressor.release.value = 0.25
     this.masterGain = this.context.createGain()
     this.masterGain.gain.value = 0.85
     this.analyser = this.context.createAnalyser()
     this.analyser.fftSize = 128
+    this.masterEqHighpass120 = this.context.createBiquadFilter()
+    this.masterEqHighpass120.type = 'highpass'
+    this.masterEqHighpass120.frequency.value = 120
+    this.masterEqHighpass120.Q.value = 0.7
+    this.masterEqHighpass180 = this.context.createBiquadFilter()
+    this.masterEqHighpass180.type = 'highpass'
+    this.masterEqHighpass180.frequency.value = 180
+    this.masterEqHighpass180.Q.value = 0.7
+    this.dcBlocker = this.context.createBiquadFilter()
+    this.dcBlocker.type = 'highpass'
+    this.dcBlocker.frequency.value = 20
+    this.dcBlocker.Q.value = 0.7
 
     this.mixGain.connect(this.saturator)
     this.saturator.connect(this.compressor)
     this.compressor.connect(this.masterGain)
     this.masterGain.connect(this.analyser)
-    this.analyser.connect(this.context.destination)
+    this.masterGain.connect(this.masterEqHighpass120)
+    this.masterEqHighpass120.connect(this.masterEqHighpass180)
+    this.masterEqHighpass180.connect(this.dcBlocker)
+    this.dcBlocker.connect(this.context.destination)
+    this.logDestinationRouting()
     this.noiseBuffer = this.buildNoiseBuffer()
     this.initialized = true
   }
@@ -91,6 +127,65 @@ class AudioEngine {
     const voices: Record<string, DebugVoice> = {}
     for (const [id, instance] of this.active.entries()) voices[id] = { ...instance.debug }
     return { voices, logs: this.debugLog.slice(-25) }
+  }
+
+  setFrDebugIsolation(enabled: boolean) {
+    this.frDebugIsolation = enabled
+    this.logDebug(`[debug-fr] isolation=${enabled ? 'on' : 'off'}`)
+  }
+
+  debugGetSpectrumSnapshot() {
+    if (!this.analyser) return null
+    const bins = new Float32Array(this.analyser.frequencyBinCount)
+    this.analyser.getFloatFrequencyData(bins)
+    const sampleRate = this.context?.sampleRate ?? 48000
+    const nyquist = sampleRate / 2
+    const hzPerBin = nyquist / bins.length
+    const points = [20, 40, 60, 80, 100, 120, 150, 173, 200, 300]
+    const result = points.map((hz) => {
+      const idx = Math.max(0, Math.min(bins.length - 1, Math.round(hz / hzPerBin)))
+      return { hz, db: Number(bins[idx]?.toFixed(2) ?? -160) }
+    })
+    this.logDebug(`[debug-fr] spectrum ${result.map((p) => `${p.hz}Hz=${p.db}dB`).join(' ')}`)
+    return result
+  }
+
+  async debugValidateLowBand(soundId: string, preset: SoundPreset, sampleMs = 1400) {
+    if (!this.context || !this.analyser) return null
+    const probeId = `__probe-${soundId}`
+    this.stopAll(false)
+    this.play(probeId, preset)
+    await new Promise((resolve) => window.setTimeout(resolve, sampleMs))
+    const bins = new Float32Array(this.analyser.frequencyBinCount)
+    this.analyser.getFloatFrequencyData(bins)
+    const sampleRate = this.context.sampleRate
+    let lowBandMaxDb = -160
+    for (let hz = 20; hz <= 150; hz += 10) {
+      const db = this.getDbAtHz(bins, sampleRate, hz)
+      lowBandMaxDb = Math.max(lowBandMaxDb, db)
+    }
+    const hz173Db = this.getDbAtHz(bins, sampleRate, 173)
+    const hz220Db = this.getDbAtHz(bins, sampleRate, 220)
+    this.stop(probeId, 0.02)
+    const result = {
+      soundId,
+      lowBandMaxDb: Number(lowBandMaxDb.toFixed(2)),
+      hz173Db: Number(hz173Db.toFixed(2)),
+      hz220Db: Number(hz220Db.toFixed(2)),
+      sampleMs,
+    }
+    this.logDebug(
+      `[debug-band] ${soundId} low20-150=${result.lowBandMaxDb}dB 173Hz=${result.hz173Db}dB 220Hz=${result.hz220Db}dB`,
+    )
+    return result
+  }
+
+  async debugPlayFrTwoToneIsolated() {
+    this.stopAll(false)
+    this.setFrDebugIsolation(true)
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+    this.play('__debug-fr-two-tone', { kind: 'twoTone' })
+    this.logDebug('[debug-fr] launched isolated two-tone')
   }
 
   setMasterVolume(value: number) {
@@ -157,10 +252,31 @@ class AudioEngine {
     }
 
     const now = this.context.currentTime
-    gainNode.gain.setValueAtTime(0.0001, now)
-    gainNode.gain.linearRampToValueAtTime(preset.gain ?? 0.35, now + 0.02)
+    gainNode.gain.setValueAtTime(0, now)
+    gainNode.gain.linearRampToValueAtTime(preset.gain ?? this.getUnifiedGain(preset.kind), now + 0.02)
     this.active.set(id, instance)
     this.logDebug(`[play] ${id} kind=${preset.kind}`)
+  }
+
+  private getUnifiedGain(kind: SoundKind) {
+    switch (kind) {
+      case 'qsiren':
+        return 0.42
+      case 'wail':
+        return 0.4
+      case 'yelp':
+        return 0.36
+      case 'twoTone':
+      case 'twoToneA':
+      case 'twoToneM':
+        return 0.4
+      case 'threeTone':
+        return 0.4
+      case 'horn':
+        return 0.34
+      default:
+        return 0.38
+    }
   }
 
   stop(id: string, fadeOut = 0.05) {
@@ -171,13 +287,33 @@ class AudioEngine {
     const now = this.context.currentTime
     instance.gainNode.gain.cancelScheduledValues(now)
     instance.gainNode.gain.setValueAtTime(instance.gainNode.gain.value, now)
-    instance.gainNode.gain.linearRampToValueAtTime(0.0001, now + fadeOut)
+    instance.gainNode.gain.linearRampToValueAtTime(0, now + fadeOut)
 
     window.setTimeout(() => {
-      instance.sampleSource?.stop()
-      instance.noiseSource?.stop()
-      instance.oscillators.forEach((osc) => osc.stop())
-      instance.lfoNodes.forEach((lfo) => lfo.stop())
+      try {
+        instance.sampleSource?.stop()
+      } catch {
+        // already stopped
+      }
+      try {
+        instance.noiseSource?.stop()
+      } catch {
+        // already stopped
+      }
+      instance.oscillators.forEach((osc) => {
+        try {
+          osc.stop()
+        } catch {
+          // already stopped
+        }
+      })
+      instance.lfoNodes.forEach((lfo) => {
+        try {
+          lfo.stop()
+        } catch {
+          // already stopped
+        }
+      })
       instance.modulationNodes.forEach((node) => {
         if ('stop' in node && typeof node.stop === 'function') {
           try {
@@ -199,6 +335,57 @@ class AudioEngine {
   stopAll(withChirp = false) {
     for (const id of this.active.keys()) this.stop(id, 0.03)
     if (withChirp) this.playStopChirp()
+  }
+
+  // Debug: coupe toute source active, conserve uniquement AudioContext -> destination.
+  debugAbsoluteSilence() {
+    for (const id of [...this.active.keys()]) {
+      this.stop(id, 0.005)
+    }
+    this.logDebug('[debug] absolute silence requested')
+  }
+
+  // Debug: mesure RMS master et remonte les sources potentiellement parasites.
+  debugSilenceDiagnostics(): SilenceDiagnostics {
+    const suspicious: string[] = []
+    const activeVoiceIds = [...this.active.keys()]
+    if (activeVoiceIds.length > 0) {
+      suspicious.push(`active voices still present: ${activeVoiceIds.join(', ')}`)
+    }
+
+    for (const [id, voice] of this.active.entries()) {
+      if (voice.holdOffset && voice.holdOffset.offset.value > 0) {
+        suspicious.push(`${id}: holdOffset > 0 (${voice.holdOffset.offset.value.toFixed(3)})`)
+      }
+      if (voice.gainNode.gain.value > 0) {
+        suspicious.push(`${id}: gainNode gain > 0 (${voice.gainNode.gain.value.toFixed(6)})`)
+      }
+      if (voice.oscillators.length > 0) {
+        suspicious.push(`${id}: oscillators array non-vide (${voice.oscillators.length})`)
+      }
+    }
+
+    let rms = 0
+    if (this.analyser) {
+      const samples = new Float32Array(this.analyser.fftSize)
+      this.analyser.getFloatTimeDomainData(samples)
+      let sum = 0
+      for (let i = 0; i < samples.length; i += 1) {
+        sum += samples[i] * samples[i]
+      }
+      rms = Math.sqrt(sum / samples.length)
+      if (rms > 0.0005) suspicious.push(`master RMS > 0 en silence (${rms.toExponential(3)})`)
+    } else {
+      suspicious.push('analyser non initialisé')
+    }
+
+    this.logDebug(`[debug] silence diagnostics rms=${rms.toExponential(3)} voices=${activeVoiceIds.length}`)
+    return {
+      rms,
+      activeVoiceCount: activeVoiceIds.length,
+      activeVoiceIds,
+      suspicious,
+    }
   }
 
   setQSirenBoost(id: string, amount: number) {
@@ -318,52 +505,92 @@ class AudioEngine {
 
   private createThreeToneFr(instance: SoundInstance) {
     if (!this.context) return
-    instance.debug.modulation = 'three-tone-fr-real-silence'
-    instance.timeouts = []
+    instance.debug.modulation = 'three-tone-fr-persistent-voice'
+    const voice = this.createFrTwoToneVoice(instance, 700, undefined, {
+      withDrift: !this.frDebugIsolation,
+      withWobble: false,
+      withNoise: false,
+      // Isolation test: bypass downstream processors to validate true silence.
+      withEq: false,
+      withGateCompressor: false,
+    })
+    if (!voice) return
+    const { oscA, gate } = voice
+    instance.mainOsc = oscA
     const noteMs = 180
-    const cyclePauseMs = 1000
-    const cycleMs = noteMs * 3 + cyclePauseMs
+    const cycleSec = (noteMs * 3) / 1000 + 1.0
+    const attack = 0.008
+    const release = 0.03
+    const horizonCycles = 220
+    const start = this.context.currentTime + 0.01
+    for (let i = 0; i < horizonCycles; i += 1) {
+      const cycleStart = start + i * cycleSec
+      const t2 = cycleStart + noteMs / 1000
+      const t3 = cycleStart + (noteMs * 2) / 1000
+      const t4 = cycleStart + (noteMs * 3) / 1000
+      // Hard reset of gain automation timeline at each cycle start.
+      gate.gain.cancelScheduledValues(cycleStart)
+      gate.gain.setValueAtTime(0, cycleStart)
+      oscA.frequency.setValueAtTime(this.clampFrequencyHz(700 + this.nextJitter(instance, 3)), cycleStart)
+      oscA.frequency.setValueAtTime(this.clampFrequencyHz(900 + this.nextJitter(instance, 3)), t2)
+      oscA.frequency.setValueAtTime(this.clampFrequencyHz(700 + this.nextJitter(instance, 3)), t3)
 
-    const scheduleCycle = (atMs: number) => {
-      const timeoutId = window.setTimeout(() => {
-        if (!this.context || !this.active.has(instance.id)) return
-        this.playFrTriplePulse(
-          instance,
-          700 + this.nextJitter(instance, 10),
-          900 + this.nextJitter(instance, 10),
-          700 + this.nextJitter(instance, 10),
-          noteMs,
+      gate.gain.setValueAtTime(0, cycleStart)
+      gate.gain.linearRampToValueAtTime(1.15, cycleStart + attack * 0.6)
+      gate.gain.linearRampToValueAtTime(1, cycleStart + attack)
+      gate.gain.setValueAtTime(1, Math.max(cycleStart + attack, t2 - release))
+      gate.gain.linearRampToValueAtTime(0, t2)
+
+      gate.gain.setValueAtTime(0, t2)
+      gate.gain.linearRampToValueAtTime(1.15, t2 + attack * 0.6)
+      gate.gain.linearRampToValueAtTime(1, t2 + attack)
+      gate.gain.setValueAtTime(1, Math.max(t2 + attack, t3 - release))
+      gate.gain.linearRampToValueAtTime(0, t3)
+
+      gate.gain.setValueAtTime(0, t3)
+      gate.gain.linearRampToValueAtTime(1.15, t3 + attack * 0.6)
+      gate.gain.linearRampToValueAtTime(1, t3 + attack)
+      gate.gain.setValueAtTime(1, Math.max(t3 + attack, t4 - release))
+      gate.gain.linearRampToValueAtTime(0, t4)
+
+      const cycleEnd = cycleStart + cycleSec
+      gate.gain.setValueAtTime(0, t4)
+      gate.gain.setValueAtTime(0, cycleEnd)
+      if (i < 8 || i % 20 === 0) {
+        this.logDebug(
+          `[three-tone] cycle=${i} f=[${700},${900},${700}] gateOffAt=${(t4 - start).toFixed(3)}s pause=${(
+            cycleEnd - t4
+          ).toFixed(3)}s`,
         )
-        instance.debug.frequencyHz = 700
-      }, atMs)
-      instance.timeouts?.push(timeoutId)
+      }
     }
-
-    scheduleCycle(0)
-    instance.timer = window.setInterval(() => {
-      if (!this.context || !this.active.has(instance.id)) return
-      scheduleCycle(0)
-    }, cycleMs)
+    instance.debug.frequencyHz = 700
   }
 
   private createTwoToneFr(instance: SoundInstance, freqs: number[], everyMs: number) {
-    const voice = this.createFrTwoToneVoice(instance, freqs[0] ?? 700)
+    const voice = this.createFrTwoToneVoice(instance, freqs[0] ?? 700, undefined, {
+      withDrift: !this.frDebugIsolation,
+      withWobble: !this.frDebugIsolation,
+      withNoise: false,
+      withEq: true,
+      withGateCompressor: true,
+    })
     if (!voice) return
-    const { oscA, oscB, sub } = voice
+    const { oscA } = voice
     instance.mainOsc = oscA
     instance.debug.frequencyHz = freqs[0] ?? 700
     instance.debug.modulation = 'two-tone-fr'
 
-    let idx = 0
-    instance.timer = window.setInterval(() => {
-      idx = (idx + 1) % freqs.length
-      const f = (freqs[idx] ?? freqs[0] ?? 700) + this.nextJitter(instance, 5)
-      const now = this.context!.currentTime
-      oscA.frequency.setValueAtTime(f, now)
-      oscB.frequency.setValueAtTime(f, now)
-      sub.frequency.setValueAtTime(f / 2, now)
-      instance.debug.frequencyHz = f
-    }, everyMs)
+    const start = this.context!.currentTime + 0.01
+    const step = everyMs / 1000
+    const horizonSteps = 600
+    for (let i = 0; i < horizonSteps; i += 1) {
+      const idx = i % freqs.length
+      const f = this.clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 700) + this.nextJitter(instance, 5))
+      oscA.frequency.setValueAtTime(f, start + i * step)
+      if (i < 8) this.logDebug(`[two-tone] step=${i} f=${f.toFixed(2)}Hz t=${(i * step).toFixed(3)}s`)
+    }
+    instance.debug.frequencyHz = freqs[0] ?? 700
   }
 
   private createPoliceFrTwoTone(
@@ -374,31 +601,23 @@ class AudioEngine {
   ) {
     if (!this.context) return
     const oscA = this.context.createOscillator()
-    const oscB = this.context.createOscillator()
     oscA.type = 'sawtooth'
-    oscB.type = 'sawtooth'
-    oscA.frequency.value = freqs[0] ?? 800
-    oscB.frequency.value = freqs[0] ?? 800
-    oscA.detune.value = -5
-    oscB.detune.value = 5
-    this.connectOscWithTimbre(instance, oscA, 1800, 24)
-    this.connectOscWithTimbre(instance, oscB, 1800, 24)
+    oscA.frequency.value = this.clampFrequencyHz(freqs[0] ?? 800)
+    oscA.detune.value = -3
+    this.connectFrOscWithTimbre(instance, oscA, 1800, 7)
     oscA.start()
-    oscB.start()
     instance.mainOsc = oscA
-    instance.oscillators.push(oscA, oscB)
+    instance.oscillators.push(oscA)
     instance.debug.frequencyHz = freqs[0] ?? 800
     instance.debug.modulation = modulation
-    this.attachAnalogDrift(instance, oscA, 0.05, 3)
-    this.attachAnalogDrift(instance, oscB, 0.05, 3)
-    this.attachGainWobble(instance, instance.gainNode.gain, 0.8, 0.02)
-    this.attachNoiseLayer(instance, 0.012)
+    if (!this.frDebugIsolation) this.attachAnalogDrift(instance, oscA, 0.05, 3)
+    if (!this.frDebugIsolation) this.attachGainWobble(instance, instance.gainNode.gain, 0.8, 0.02)
     const policeCompressor = this.context.createDynamicsCompressor()
-    policeCompressor.threshold.value = -30
-    policeCompressor.knee.value = 12
-    policeCompressor.ratio.value = 5.5
+    policeCompressor.threshold.value = -32
+    policeCompressor.knee.value = 14
+    policeCompressor.ratio.value = 4.8
     policeCompressor.attack.value = 0.005
-    policeCompressor.release.value = 0.14
+    policeCompressor.release.value = 0.2
     try {
       instance.voiceInput.disconnect()
     } catch {
@@ -408,136 +627,135 @@ class AudioEngine {
     policeCompressor.connect(instance.gainNode)
     instance.modulationNodes.push(policeCompressor)
 
-    let idx = 0
-    instance.timer = window.setInterval(() => {
-      idx = (idx + 1) % freqs.length
-      const f = (freqs[idx] ?? freqs[0] ?? 800) + this.nextJitter(instance, 5)
-      const now = this.context!.currentTime
-      oscA.frequency.setValueAtTime(f, now)
-      oscB.frequency.setValueAtTime(f, now)
-      instance.debug.frequencyHz = f
-    }, everyMs)
+    const start = this.context.currentTime + 0.01
+    const step = everyMs / 1000
+    const horizonSteps = 600
+    for (let i = 0; i < horizonSteps; i += 1) {
+      const idx = i % freqs.length
+      const f = this.clampFrequencyHz((freqs[idx] ?? freqs[0] ?? 800) + this.nextJitter(instance, 5))
+      oscA.frequency.setValueAtTime(f, start + i * step)
+      if (i < 8) this.logDebug(`[two-tone-police] step=${i} f=${f.toFixed(2)}Hz t=${(i * step).toFixed(3)}s`)
+    }
+    instance.debug.frequencyHz = freqs[0] ?? 800
   }
 
-  private createFrTwoToneVoice(instance: SoundInstance, initialFreq: number) {
+  private createFrTwoToneVoice(
+    instance: SoundInstance,
+    initialFreq: number,
+    startAt?: number,
+    options?: FrVoiceOptions,
+  ) {
     if (!this.context) return null
+    const withDrift = options?.withDrift ?? true
+    const withWobble = options?.withWobble ?? true
+    const withNoise = options?.withNoise ?? true
+    const noiseGain = options?.noiseGain ?? 0.01
+    const withEq = options?.withEq ?? true
+    const withGateCompressor = options?.withGateCompressor ?? true
     const oscA = this.context.createOscillator()
-    const oscB = this.context.createOscillator()
-    oscA.type = 'sine'
-    oscB.type = 'sine'
-    oscA.frequency.value = initialFreq
-    oscB.frequency.value = initialFreq
-    oscA.detune.value = -12
-    oscB.detune.value = 12
-    const sub = this.context.createOscillator()
-    sub.type = 'triangle'
-    sub.frequency.value = initialFreq / 2
+    oscA.type = 'sawtooth'
+    oscA.frequency.value = this.clampFrequencyHz(initialFreq)
+    oscA.detune.value = -3
+    this.connectFrOscWithTimbre(instance, oscA, 2200, 7)
     const gate = this.context.createGain()
     gate.gain.value = 1
-    this.connectOscWithTimbre(instance, oscA, 2500, 16)
-    this.connectOscWithTimbre(instance, oscB, 2500, 16)
-    this.connectOscWithTimbre(instance, sub, 2200, 10)
     try {
       instance.voiceInput.disconnect()
     } catch {
       // no-op
     }
     instance.voiceInput.connect(gate)
-    gate.connect(instance.gainNode)
-    oscA.start()
-    oscB.start()
-    sub.start()
-    instance.oscillators.push(oscA, oscB, sub)
     instance.modulationNodes.push(gate)
-    this.attachAnalogDrift(instance, oscA, 0.05, 3)
-    this.attachAnalogDrift(instance, oscB, 0.05, 3)
-    this.attachAnalogDrift(instance, sub, 0.05, 2.5)
-    this.attachGainWobble(instance, instance.gainNode.gain, 0.75, 0.028)
-    this.attachNoiseLayer(instance, 0.01)
-    this.applyTwoToneFrEq(instance)
-    return { oscA, oscB, sub, gate }
+    let postGate: AudioNode = gate
+    if (withGateCompressor) {
+      const frCompressor = this.context.createDynamicsCompressor()
+      frCompressor.threshold.value = -26
+      frCompressor.knee.value = 14
+      frCompressor.ratio.value = 4
+      frCompressor.attack.value = 0.006
+      frCompressor.release.value = 0.18
+      postGate.connect(frCompressor)
+      postGate = frCompressor
+      instance.modulationNodes.push(frCompressor)
+    }
+    if (withEq) {
+      const bp1 = this.context.createBiquadFilter()
+      bp1.type = 'peaking'
+      bp1.frequency.value = 1200
+      bp1.Q.value = 1.1
+      bp1.gain.value = 3.5
+      const bp2 = this.context.createBiquadFilter()
+      bp2.type = 'peaking'
+      bp2.frequency.value = 1800
+      bp2.Q.value = 1.2
+      bp2.gain.value = 3.8
+      const lowShelf = this.context.createBiquadFilter()
+      lowShelf.type = 'highshelf'
+      lowShelf.frequency.value = 3200
+      lowShelf.gain.value = -3.2
+      postGate.connect(bp1)
+      bp1.connect(bp2)
+      bp2.connect(lowShelf)
+      postGate = lowShelf
+      instance.modulationNodes.push(bp1, bp2, lowShelf)
+    }
+    postGate.connect(instance.gainNode)
+    oscA.start(startAt ?? this.context.currentTime)
+    instance.oscillators.push(oscA)
+    if (withDrift) this.attachAnalogDrift(instance, oscA, 0.05, 3)
+    if (withWobble) this.attachGainWobble(instance, instance.gainNode.gain, 0.75, 0.028)
+    if (withNoise) this.attachNoiseLayer(instance, noiseGain)
+    return { oscA, gate }
   }
 
-  private playFrTriplePulse(
+  async debugFrSilenceTest() {
+    this.debugAbsoluteSilence()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+    return this.debugSilenceDiagnostics()
+  }
+
+  private connectFrOscWithTimbre(
     instance: SoundInstance,
-    freq1: number,
-    freq2: number,
-    freq3: number,
-    noteMs: number,
+    osc: OscillatorNode,
+    lowpassHz: number,
+    driveAmount: number,
+  ) {
+    this.connectFrSourceWithTimbre(instance, osc, lowpassHz, driveAmount)
+  }
+
+  private connectFrSourceWithTimbre(
+    instance: SoundInstance,
+    source: AudioNode,
+    lowpassHz: number,
+    driveAmount: number,
   ) {
     if (!this.context) return
-    const oscA = this.context.createOscillator()
-    const oscB = this.context.createOscillator()
-    const sub = this.context.createOscillator()
-    oscA.type = 'sine'
-    oscB.type = 'sine'
-    sub.type = 'triangle'
-    oscA.frequency.value = freq1
-    oscB.frequency.value = freq1
-    sub.frequency.value = freq1 / 2
-    oscA.detune.value = -12
-    oscB.detune.value = 12
-    const gate = this.context.createGain()
-    gate.gain.value = 1
-    this.connectOscWithTimbre(instance, oscA, 2500, 16)
-    this.connectOscWithTimbre(instance, oscB, 2500, 16)
-    this.connectOscWithTimbre(instance, sub, 2200, 10)
-    try {
-      instance.voiceInput.disconnect()
-    } catch {
-      // no-op
-    }
-    instance.voiceInput.connect(gate)
-    gate.connect(instance.gainNode)
-    const now = this.context.currentTime
-    const t2 = now + noteMs / 1000
-    const t3 = now + (noteMs * 2) / 1000
-    oscA.frequency.setValueAtTime(freq1, now)
-    oscB.frequency.setValueAtTime(freq1, now)
-    sub.frequency.setValueAtTime(freq1 / 2, now)
-    oscA.frequency.setValueAtTime(freq2, t2)
-    oscB.frequency.setValueAtTime(freq2, t2)
-    sub.frequency.setValueAtTime(freq2 / 2, t2)
-    oscA.frequency.setValueAtTime(freq3, t3)
-    oscB.frequency.setValueAtTime(freq3, t3)
-    sub.frequency.setValueAtTime(freq3 / 2, t3)
-    oscA.start()
-    oscB.start()
-    sub.start()
-    const stopAt = now + (noteMs * 3) / 1000
-    oscA.stop(stopAt)
-    oscB.stop(stopAt)
-    sub.stop(stopAt)
-    instance.oscillators.push(oscA, oscB, sub)
-    instance.modulationNodes.push(gate)
-  }
+    const highpass = this.context.createBiquadFilter()
+    highpass.type = 'highpass'
+    highpass.frequency.value = 80
+    highpass.Q.value = 0.7
 
-  private applyTwoToneFrEq(instance: SoundInstance) {
-    if (!this.context) return
-    const bp1 = this.context.createBiquadFilter()
-    bp1.type = 'peaking'
-    bp1.frequency.value = 1200
-    bp1.Q.value = 1.1
-    bp1.gain.value = 3.5
-    const bp2 = this.context.createBiquadFilter()
-    bp2.type = 'peaking'
-    bp2.frequency.value = 1800
-    bp2.Q.value = 1.2
-    bp2.gain.value = 3.8
-    const lowShelf = this.context.createBiquadFilter()
-    lowShelf.type = 'highshelf'
-    lowShelf.frequency.value = 3200
-    lowShelf.gain.value = -3.2
-    try {
-      instance.voiceInput.disconnect()
-    } catch {
-      // no-op
-    }
-    instance.voiceInput.connect(bp1)
-    bp1.connect(bp2)
-    bp2.connect(lowShelf)
-    lowShelf.connect(instance.gainNode)
-    instance.modulationNodes.push(bp1, bp2, lowShelf)
+    const shaper = this.context.createWaveShaper()
+    shaper.curve = this.makeDistortionCurve(driveAmount)
+    shaper.oversample = '2x'
+
+    const dcHighpass = this.context.createBiquadFilter()
+    dcHighpass.type = 'highpass'
+    dcHighpass.frequency.value = 100
+    dcHighpass.Q.value = 0.7
+
+    const lowpass = this.context.createBiquadFilter()
+    lowpass.type = 'lowpass'
+    lowpass.frequency.value = lowpassHz
+    lowpass.Q.value = 1.1
+
+    source.connect(highpass)
+    highpass.connect(shaper)
+    shaper.connect(dcHighpass)
+    dcHighpass.connect(lowpass)
+    lowpass.connect(instance.voiceInput)
+
+    instance.modulationNodes.push(highpass, shaper, dcHighpass, lowpass)
   }
 
   private createSwitchedTone(instance: SoundInstance, freqs: number[], everyMs: number, modulation: string) {
@@ -646,7 +864,7 @@ class AudioEngine {
 
     const now = this.context.currentTime
     instance.gainNode.gain.cancelScheduledValues(now)
-    instance.gainNode.gain.setValueAtTime(0.0001, now)
+    instance.gainNode.gain.setValueAtTime(0, now)
     instance.gainNode.gain.linearRampToValueAtTime(0.55, now + 0.012)
     instance.gainNode.gain.setTargetAtTime(0.5, now + 0.02, 0.05)
 
@@ -708,18 +926,28 @@ class AudioEngine {
     return Math.max(-maxAbs, Math.min(maxAbs, value))
   }
 
+  private clampFrequencyHz(hz: number) {
+    return Math.max(150, Math.min(6000, hz))
+  }
+
   private attachNoiseLayer(instance: SoundInstance, noiseGainValue: number) {
     if (!this.context || !this.noiseBuffer) return
+    const clampedGain = Math.max(0, Math.min(0.05, noiseGainValue))
     const noise = this.context.createBufferSource()
     noise.buffer = this.noiseBuffer
     noise.loop = true
+    const noiseHighpass = this.context.createBiquadFilter()
+    noiseHighpass.type = 'highpass'
+    noiseHighpass.frequency.value = 220
+    noiseHighpass.Q.value = 0.707
     const noiseGain = this.context.createGain()
-    noiseGain.gain.value = noiseGainValue
-    noise.connect(noiseGain)
+    noiseGain.gain.value = clampedGain
+    noise.connect(noiseHighpass)
+    noiseHighpass.connect(noiseGain)
     noiseGain.connect(instance.voiceInput)
     noise.start()
     instance.noiseSource = noise
-    instance.modulationNodes.push(noiseGain)
+    instance.modulationNodes.push(noiseHighpass, noiseGain)
   }
 
   private buildNoiseBuffer() {
@@ -727,24 +955,36 @@ class AudioEngine {
     const sampleRate = this.context.sampleRate
     const buffer = this.context.createBuffer(1, sampleRate, sampleRate)
     const data = buffer.getChannelData(0)
+    const freqs = [233, 377, 601, 983, 1423]
+    const phases = [0.12, 1.17, 2.31, 0.77, 1.94]
     for (let i = 0; i < data.length; i += 1) {
       const t = i / sampleRate
-      data[i] =
-        0.36 * Math.sin(2 * Math.PI * 173 * t) +
-        0.22 * Math.sin(2 * Math.PI * 347 * t) +
-        0.12 * Math.sin(2 * Math.PI * 911 * t)
+      let v = 0
+      for (let j = 0; j < freqs.length; j += 1) {
+        const f = freqs[j] ?? 233
+        const p = phases[j] ?? 0
+        v += (0.12 / (1 + j * 0.18)) * Math.sin(2 * Math.PI * f * t + p)
+      }
+      data[i] = v
     }
     return buffer
+  }
+
+  private getDbAtHz(bins: Float32Array, sampleRate: number, hz: number) {
+    const nyquist = sampleRate / 2
+    const hzPerBin = nyquist / bins.length
+    const idx = Math.max(0, Math.min(bins.length - 1, Math.round(hz / hzPerBin)))
+    return bins[idx] ?? -160
   }
 
   private makeDistortionCurve(amount: number) {
     const n = 44100
     const curve = new Float32Array(n)
-    const k = amount
-    const deg = Math.PI / 180
+    const drive = Math.max(1, amount)
     for (let i = 0; i < n; i += 1) {
       const x = (i * 2) / n - 1
-      curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x))
+      // Courbe strictement impaire: f(-x) = -f(x), sans offset DC.
+      curve[i] = Math.tanh((drive / 12) * x)
     }
     return curve
   }
@@ -753,6 +993,15 @@ class AudioEngine {
     this.debugLog.push(`${new Date().toISOString()} ${message}`)
     if (this.debugLog.length > 100) this.debugLog.shift()
     console.debug(message)
+  }
+
+  private logDestinationRouting() {
+    const routing = [
+      'Audio route: source -> mixGain -> saturator -> masterGain -> HP120 -> HP180 -> DCBlocker -> destination',
+      'Analyzer route: masterGain -> analyser (parallel, no destination)',
+      'Nodes connected to destination: dcBlocker only',
+    ]
+    routing.forEach((line) => this.logDebug(`[routing] ${line}`))
   }
 }
 
