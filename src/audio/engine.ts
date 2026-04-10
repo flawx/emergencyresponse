@@ -828,6 +828,7 @@ class AudioEngine {
   ) {
     if (!this.context) return
     const isWail = modulationName === 'wail-lfo'
+    const isWailOrYelp = modulationName === 'wail-lfo' || modulationName === 'yelp-lfo'
     const carrier = this.context.createOscillator()
     carrier.type = carrierType
     carrier.frequency.value = baseHz
@@ -841,7 +842,7 @@ class AudioEngine {
     lfo.connect(lfoShaper)
     lfoShaper.connect(lfoGain)
     lfoGain.connect(carrier.frequency)
-    this.connectOscWithTimbre(instance, carrier, 3200, 10)
+    this.connectOscWithTimbre(instance, carrier, 3400, isWailOrYelp ? 6 : 10)
     if (isWail) carrier.frequency.value = 500
     carrier.start()
     lfo.start()
@@ -855,13 +856,40 @@ class AudioEngine {
     this.attachAnalogDrift(instance, carrier, 0.05, 3)
     this.attachGainWobble(instance, instance.gainNode.gain, 0.1, 0.02)
     this.attachNoiseLayer(instance, 0.007)
+    if (isWailOrYelp) this.applyWailYelpVoicing(instance)
     if (isWail) this.applyAsymmetricWailAutomation(instance, carrier)
-    if (modulationName === 'yelp-lfo' && this.compressor && this.saturator) {
+    if (modulationName === 'yelp-lfo') {
       instance.gainNode.gain.value = 0.46
-      this.compressor.threshold.value = -28
-      this.compressor.ratio.value = 4.6
-      this.saturator.curve = this.makeDistortionCurve(8)
     }
+  }
+
+  private applyWailYelpVoicing(instance: SoundInstance) {
+    if (!this.context) return
+    try {
+      instance.voiceInput.disconnect()
+    } catch {
+      // no-op
+    }
+    const presence = this.context.createBiquadFilter()
+    presence.type = 'peaking'
+    presence.frequency.value = 2000
+    presence.Q.value = 1.0
+    presence.gain.value = 2.2
+    const highShelf = this.context.createBiquadFilter()
+    highShelf.type = 'highshelf'
+    highShelf.frequency.value = 3200
+    highShelf.gain.value = 4.2
+    const sirenCompressor = this.context.createDynamicsCompressor()
+    sirenCompressor.threshold.value = -16
+    sirenCompressor.knee.value = 12
+    sirenCompressor.ratio.value = 3
+    sirenCompressor.attack.value = 0.004
+    sirenCompressor.release.value = 0.09
+    instance.voiceInput.connect(presence)
+    presence.connect(highShelf)
+    highShelf.connect(sirenCompressor)
+    sirenCompressor.connect(instance.gainNode)
+    instance.modulationNodes.push(presence, highShelf, sirenCompressor)
   }
 
   private applyAsymmetricWailAutomation(instance: SoundInstance, carrier: OscillatorNode) {

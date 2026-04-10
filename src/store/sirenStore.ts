@@ -4,6 +4,38 @@ import { getAllPlayableSoundIds, getScenario, type SoundDefinition } from '../ut
 
 type ActiveMap = Record<string, boolean>
 
+const isWailOrYelp = (kind: SoundDefinition['kind']) => kind === 'wail' || kind === 'yelp'
+const isFrAmbuTone = (kind: SoundDefinition['kind']) => kind === 'twoTone' || kind === 'threeTone' || kind === 'twoToneUmh'
+const isFrAmbuId = (id: string) => id.startsWith('eu-ambu-')
+
+const canPlayTogether = (soundA: SoundDefinition, soundB: SoundDefinition) => {
+  if (soundA.id === soundB.id) return true
+  if (isWailOrYelp(soundA.kind) && isWailOrYelp(soundB.kind)) return false
+  if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
+  if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
+  if (isFrAmbuId(soundA.id) && isFrAmbuId(soundB.id)) {
+    const aTone = isFrAmbuTone(soundA.kind)
+    const bTone = isFrAmbuTone(soundB.kind)
+    const aWailYelp = isWailOrYelp(soundA.kind)
+    const bWailYelp = isWailOrYelp(soundB.kind)
+    if ((aTone && bWailYelp) || (bTone && aWailYelp)) return true
+  }
+  return true
+}
+
+const canIgnoreExplicitExclusive = (soundA: SoundDefinition, soundB: SoundDefinition) => {
+  if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
+  if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
+  if (isFrAmbuId(soundA.id) && isFrAmbuId(soundB.id)) {
+    const aTone = isFrAmbuTone(soundA.kind)
+    const bTone = isFrAmbuTone(soundB.kind)
+    const aWailYelp = isWailOrYelp(soundA.kind)
+    const bWailYelp = isWailOrYelp(soundB.kind)
+    if ((aTone && bWailYelp) || (bTone && aWailYelp)) return true
+  }
+  return false
+}
+
 type SirenStore = {
   initialized: boolean
   masterVolume: number
@@ -18,12 +50,27 @@ type SirenStore = {
   stopAll: (withChirp?: boolean) => void
 }
 
-const clearExclusive = (active: ActiveMap, ids: string[] = []) => {
-  for (const id of ids) active[id] = false
-}
-
 const setSound = (active: ActiveMap, id: string, value: boolean) => {
   active[id] = value
+}
+
+const stopIncompatibleActive = (
+  next: ActiveMap,
+  defsById: Record<string, SoundDefinition>,
+  incoming: SoundDefinition,
+) => {
+  for (const [activeId, enabled] of Object.entries(next)) {
+    if (!enabled || activeId === incoming.id) continue
+    const activeDef = defsById[activeId]
+    if (!activeDef) continue
+    const explicitExclusive =
+      (incoming.exclusiveWith ?? []).includes(activeId) || (activeDef.exclusiveWith ?? []).includes(incoming.id)
+    const compatible = canPlayTogether(incoming, activeDef)
+    if (!compatible || (explicitExclusive && !canIgnoreExplicitExclusive(incoming, activeDef))) {
+      next[activeId] = false
+      audioEngine.stop(activeId)
+    }
+  }
 }
 
 export const useSirenStore = create<SirenStore>((set, get) => ({
@@ -53,6 +100,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
     const scenario = getScenario(region, emergency)
     if (!scenario) return
+    const defsById = Object.fromEntries(scenario.defs.map((def) => [def.id, def]))
 
     const isActive = !!get().active[sound.id]
     if (isActive) {
@@ -63,8 +111,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
     set((state) => {
       const next = { ...state.active }
-      clearExclusive(next, sound.exclusiveWith)
-      for (const ex of sound.exclusiveWith ?? []) audioEngine.stop(ex)
+      stopIncompatibleActive(next, defsById, sound)
       setSound(next, sound.id, true)
       return { active: next }
     })
@@ -85,6 +132,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
     const scenario = getScenario(region, emergency)
     if (!scenario) return
+    const defsById = Object.fromEntries(scenario.defs.map((def) => [def.id, def]))
 
     if (sound.kind === 'qsiren') {
       if (!get().active[sound.id]) {
@@ -98,8 +146,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
     if (get().active[sound.id]) return
     set((state) => {
       const next = { ...state.active }
-      clearExclusive(next, sound.exclusiveWith)
-      for (const ex of sound.exclusiveWith ?? []) audioEngine.stop(ex)
+      stopIncompatibleActive(next, defsById, sound)
       setSound(next, sound.id, true)
       return { active: next }
     })
