@@ -27,6 +27,9 @@ type FrVoiceOptions = {
   withGateCompressor?: boolean
 }
 
+/** Réservé aux extensions futures ; WAIL/YELP sont identiques pour tous les ids (pas de variante régionale). */
+export type WailYelpUnifiedOptions = Record<string, never>
+
 type SoundInstance = {
   id: string
   gainNode: GainNode
@@ -56,6 +59,7 @@ const SAMPLE_EXTENSIONS = ['mp3', 'wav', 'ogg']
 class AudioEngine {
   private context?: AudioContext
   private masterGain?: GainNode
+  private masterMakeupGain?: GainNode
   private mixGain?: GainNode
   private saturatorInputGain?: GainNode
   private compressor?: DynamicsCompressorNode
@@ -65,12 +69,17 @@ class AudioEngine {
   private dcBlocker?: BiquadFilterNode
   private masterEqHighpass180?: BiquadFilterNode
   private masterEqPresence?: BiquadFilterNode
+  private masterEqHighShelf?: BiquadFilterNode
   private initialized = false
   private samples = new Map<string, AudioBuffer>()
   private active = new Map<string, SoundInstance>()
   private debugLog: string[] = []
   private noiseBuffer?: AudioBuffer
   private frDebugIsolation = false
+  private readonly loudnessTargetDb = -11
+  private loudnessByKind = new Map<SoundKind, number>()
+  private loudnessGainByKind = new Map<SoundKind, number>()
+  private loudnessTrackers = new Map<string, number>()
 
   async init() {
     if (this.initialized) return
@@ -78,18 +87,20 @@ class AudioEngine {
     this.mixGain = this.context.createGain()
     this.mixGain.gain.value = 1
     this.saturatorInputGain = this.context.createGain()
-    this.saturatorInputGain.gain.value = 1.25
+    this.saturatorInputGain.gain.value = 1.4
     this.saturator = this.context.createWaveShaper()
-    this.saturator.curve = this.makeDistortionCurve(9)
+    this.saturator.curve = this.makeDistortionCurve(11)
     this.saturator.oversample = '4x'
     this.compressor = this.context.createDynamicsCompressor()
-    this.compressor.threshold.value = -20
+    this.compressor.threshold.value = -24
     this.compressor.knee.value = 14
-    this.compressor.ratio.value = 5
-    this.compressor.attack.value = 0.006
-    this.compressor.release.value = 0.08
+    this.compressor.ratio.value = 6
+    this.compressor.attack.value = 0.003
+    this.compressor.release.value = 0.06
+    this.masterMakeupGain = this.context.createGain()
+    this.masterMakeupGain.gain.value = 1.41
     this.masterGain = this.context.createGain()
-    this.masterGain.gain.value = 1.08
+    this.masterGain.gain.value = 0.92
     this.analyser = this.context.createAnalyser()
     this.analyser.fftSize = 128
     this.masterEqHighpass180 = this.context.createBiquadFilter()
@@ -98,9 +109,13 @@ class AudioEngine {
     this.masterEqHighpass180.Q.value = 0.7
     this.masterEqPresence = this.context.createBiquadFilter()
     this.masterEqPresence.type = 'peaking'
-    this.masterEqPresence.frequency.value = 1450
-    this.masterEqPresence.Q.value = 0.95
-    this.masterEqPresence.gain.value = 3.2
+    this.masterEqPresence.frequency.value = 1900
+    this.masterEqPresence.Q.value = 0.9
+    this.masterEqPresence.gain.value = 5.2
+    this.masterEqHighShelf = this.context.createBiquadFilter()
+    this.masterEqHighShelf.type = 'highshelf'
+    this.masterEqHighShelf.frequency.value = 3600
+    this.masterEqHighShelf.gain.value = 7.2
     this.dcBlocker = this.context.createBiquadFilter()
     this.dcBlocker.type = 'highpass'
     this.dcBlocker.frequency.value = 20
@@ -112,14 +127,16 @@ class AudioEngine {
     this.finalLimiter.attack.value = 0.001
     this.finalLimiter.release.value = 0.05
 
-    this.mixGain.connect(this.saturatorInputGain)
+    this.mixGain.connect(this.masterEqHighpass180)
+    this.masterEqHighpass180.connect(this.saturatorInputGain)
     this.saturatorInputGain.connect(this.saturator)
     this.saturator.connect(this.compressor)
-    this.compressor.connect(this.masterGain)
+    this.compressor.connect(this.masterMakeupGain)
+    this.masterMakeupGain.connect(this.masterGain)
     this.masterGain.connect(this.analyser)
-    this.masterGain.connect(this.masterEqHighpass180)
-    this.masterEqHighpass180.connect(this.masterEqPresence)
-    this.masterEqPresence.connect(this.dcBlocker)
+    this.masterGain.connect(this.masterEqPresence)
+    this.masterEqPresence.connect(this.masterEqHighShelf)
+    this.masterEqHighShelf.connect(this.dcBlocker)
     this.dcBlocker.connect(this.finalLimiter)
     this.finalLimiter.connect(this.context.destination)
     this.logDestinationRouting()
@@ -266,8 +283,10 @@ class AudioEngine {
 
     const now = this.context.currentTime
     gainNode.gain.setValueAtTime(0, now)
-    gainNode.gain.linearRampToValueAtTime(this.normalizePresetVolume(preset.kind, preset.gain), now + 0.02)
+    const normalizedGain = this.normalizePresetVolume(preset.kind, preset.gain)
+    gainNode.gain.linearRampToValueAtTime(normalizedGain, now + 0.02)
     this.active.set(id, instance)
+    this.startLoudnessTracking(id, preset.kind)
     this.logDebug(`[play] ${id} kind=${preset.kind}`)
   }
 
@@ -294,22 +313,73 @@ class AudioEngine {
   }
 
   private normalizePresetVolume(kind: SoundKind, explicitGain?: number) {
-    const base = explicitGain ?? this.getUnifiedGain(kind)
-    const compensation: Partial<Record<SoundKind, number>> = {
-      qsiren: 0.98,
-      wail: 1.02,
-      yelp: 1.03,
+    const target = this.getUnifiedGain(kind)
+    const staticCompensation: Partial<Record<SoundKind, number>> = {
+      qsiren: 0.99,
+      wail: 1.01,
+      yelp: 0.9,
       hilo: 1.02,
       phaser: 1.01,
       horn: 0.95,
-      twoTone: 1,
-      twoToneA: 1,
-      twoToneM: 1,
-      twoToneUmh: 1,
-      threeTone: 1,
+      twoTone: 1.12,
+      twoToneA: 1.1,
+      twoToneM: 1.1,
+      twoToneUmh: 1.12,
+      threeTone: 1.14,
     }
-    const normalized = base * (compensation[kind] ?? 1)
-    return Math.max(0.34, Math.min(0.56, normalized))
+    const learnedCompensation = this.loudnessGainByKind.get(kind) ?? 1
+    const normalized = (explicitGain ?? target) * (staticCompensation[kind] ?? 1) * learnedCompensation
+    const clamped = Math.max(0.4, Math.min(0.64, normalized))
+    this.logDebug(
+      `[loudness] kind=${kind} gain=${clamped.toFixed(3)} static=${(staticCompensation[kind] ?? 1).toFixed(
+        3,
+      )} learned=${learnedCompensation.toFixed(3)}`,
+    )
+    return clamped
+  }
+
+  private startLoudnessTracking(id: string, kind: SoundKind) {
+    if (!this.context || !this.analyser) return
+    if (this.active.size !== 1) return
+    const startedAt = this.context.currentTime
+    const tracker = window.setInterval(() => {
+      if (!this.context || !this.analyser || !this.active.has(id)) {
+        const existing = this.loudnessTrackers.get(id)
+        if (existing) window.clearInterval(existing)
+        this.loudnessTrackers.delete(id)
+        return
+      }
+      if (this.active.size !== 1) return
+      const samples = new Float32Array(this.analyser.fftSize)
+      this.analyser.getFloatTimeDomainData(samples)
+      let sum = 0
+      for (let i = 0; i < samples.length; i += 1) {
+        sum += samples[i] * samples[i]
+      }
+      const rms = Math.sqrt(sum / samples.length)
+      const measuredDb = this.measureLoudness(rms)
+      const prevDb = this.loudnessByKind.get(kind)
+      const smoothedDb = prevDb == null ? measuredDb : prevDb * 0.82 + measuredDb * 0.18
+      this.loudnessByKind.set(kind, smoothedDb)
+      const adjustDb = Math.max(-6, Math.min(6, this.loudnessTargetDb - smoothedDb))
+      const gainComp = Math.pow(10, adjustDb / 20)
+      this.loudnessGainByKind.set(kind, gainComp)
+      if (this.context.currentTime - startedAt > 2.4) {
+        window.clearInterval(tracker)
+        this.loudnessTrackers.delete(id)
+      }
+      this.logDebug(
+        `[loudness] kind=${kind} measured=${smoothedDb.toFixed(2)}dB target=${this.loudnessTargetDb}dB comp=${gainComp.toFixed(
+          3,
+        )}`,
+      )
+    }, 180)
+    this.loudnessTrackers.set(id, tracker)
+  }
+
+  private measureLoudness(rms: number) {
+    const floor = 1e-7
+    return 20 * Math.log10(Math.max(floor, rms))
   }
 
   stop(id: string, fadeOut = 0.05) {
@@ -323,6 +393,11 @@ class AudioEngine {
     instance.gainNode.gain.linearRampToValueAtTime(0, now + fadeOut)
 
     window.setTimeout(() => {
+      const tracker = this.loudnessTrackers.get(id)
+      if (tracker) {
+        window.clearInterval(tracker)
+        this.loudnessTrackers.delete(id)
+      }
       try {
         instance.sampleSource?.stop()
       } catch {
@@ -446,13 +521,13 @@ class AudioEngine {
         this.createThreeToneFr(instance)
         break
       case 'wail':
-        this.createLfoSiren(instance, 1160, 0.2, 440, 'sine', 'sine', 'wail-lfo')
+        this.createWailUnified(instance, {})
         break
       case 'yelp':
-        this.createLfoSiren(instance, 1000, 3.5, 300, 'triangle', 'triangle', 'yelp-lfo')
+        this.createYelpUnified(instance, {})
         break
       case 'phaser':
-        this.createLfoSiren(instance, 860, 14, 220, 'triangle', 'square', 'phaser-lfo')
+        this.createPhaserLfoSiren(instance)
         break
       case 'hilo':
         this.createSwitchedTone(instance, [600, 1000], 500, 'hilo')
@@ -507,6 +582,28 @@ class AudioEngine {
     shaper.connect(lowpass)
     lowpass.connect(instance.voiceInput)
     instance.modulationNodes.push(shaper, lowpass)
+  }
+
+  /**
+   * WAIL/YELP : saw riche → preGain → tanh (harmoniques) → low-pass (agressivité contrôlée) → voiceInput.
+   * Ne modifie pas la master chain.
+   */
+  private connectUnifiedSirenOscToVoiceInput(instance: SoundInstance, osc: OscillatorNode) {
+    if (!this.context) return
+    const preGain = this.context.createGain()
+    preGain.gain.value = 1.4
+    const tanhShaper = this.context.createWaveShaper()
+    tanhShaper.curve = this.makeSirenLocalTanhCurve()
+    tanhShaper.oversample = '4x'
+    const toneLp = this.context.createBiquadFilter()
+    toneLp.type = 'lowpass'
+    toneLp.frequency.value = 3500
+    toneLp.Q.value = 0.85
+    osc.connect(preGain)
+    preGain.connect(tanhShaper)
+    tanhShaper.connect(toneLp)
+    toneLp.connect(instance.voiceInput)
+    instance.modulationNodes.push(preGain, tanhShaper, toneLp)
   }
 
   private createQSiren(instance: SoundInstance) {
@@ -639,6 +736,8 @@ class AudioEngine {
     oscA.frequency.value = this.clampFrequencyHz(freqs[0] ?? 800)
     oscA.detune.value = -3
     this.connectFrOscWithTimbre(instance, oscA, 1800, 7)
+    // FR tones need stronger pre-drive into unified master chain.
+    instance.voiceInput.gain.value = 1.41
     oscA.start()
     instance.mainOsc = oscA
     instance.oscillators.push(oscA)
@@ -690,6 +789,8 @@ class AudioEngine {
     oscA.frequency.value = this.clampFrequencyHz(initialFreq)
     oscA.detune.value = -3
     this.connectFrOscWithTimbre(instance, oscA, 2200, 7)
+    // FR tones need stronger pre-drive into unified master chain.
+    instance.voiceInput.gain.value = 1.41
     const gate = this.context.createGain()
     gate.gain.value = 1
     try {
@@ -817,33 +918,77 @@ class AudioEngine {
     }, everyMs)
   }
 
-  private createLfoSiren(
-    instance: SoundInstance,
-    baseHz: number,
-    lfoHz: number,
-    depth: number,
-    lfoType: OscillatorType,
-    carrierType: OscillatorType,
-    modulationName: string,
-  ) {
+  private createWailUnified(instance: SoundInstance, _options?: WailYelpUnifiedOptions) {
     if (!this.context) return
-    const isWail = modulationName === 'wail-lfo'
-    const isWailOrYelp = modulationName === 'wail-lfo' || modulationName === 'yelp-lfo'
+    console.log('[WAIL] unified version used')
     const carrier = this.context.createOscillator()
-    carrier.type = carrierType
+    carrier.type = 'sawtooth'
+    carrier.frequency.value = 500
+    this.connectUnifiedSirenOscToVoiceInput(instance, carrier)
+    carrier.start()
+
+    instance.mainOsc = carrier
+    instance.oscillators.push(carrier)
+    instance.debug.frequencyHz = 500
+    instance.debug.modulation = 'wail-unified-saw'
+    this.attachAnalogDrift(instance, carrier, 0.05, 3)
+    this.attachGainWobble(instance, instance.gainNode.gain, 0.1, 0.02)
+    this.attachNoiseLayer(instance, 0.009)
+    this.applyWailYelpVoicing(instance)
+    this.applyAsymmetricWailAutomation(instance, carrier)
+  }
+
+  private createYelpUnified(instance: SoundInstance, _options?: WailYelpUnifiedOptions) {
+    if (!this.context) return
+    console.log('[YELP] unified version used')
+    const centerHz = 1250
+    const spreadHz = 350
+    const lfoHz = 4
+    const carrier = this.context.createOscillator()
+    carrier.type = 'sawtooth'
+    carrier.frequency.value = centerHz
+    const lfo = this.context.createOscillator()
+    lfo.type = 'square'
+    lfo.frequency.value = lfoHz
+    const lfoGain = this.context.createGain()
+    lfoGain.gain.value = spreadHz
+    lfo.connect(lfoGain)
+    lfoGain.connect(carrier.frequency)
+    this.connectUnifiedSirenOscToVoiceInput(instance, carrier)
+    carrier.start()
+    lfo.start()
+
+    instance.mainOsc = carrier
+    instance.oscillators.push(carrier)
+    instance.lfoNodes.push(lfo)
+    instance.modulationNodes.push(lfoGain)
+    instance.debug.frequencyHz = centerHz
+    instance.debug.modulation = 'yelp-unified-saw-square'
+    this.attachAnalogDrift(instance, carrier, 0.06, 3.5)
+    this.attachGainWobble(instance, instance.gainNode.gain, 0.12, 0.022)
+    this.attachNoiseLayer(instance, 0.009)
+    this.applyWailYelpVoicing(instance)
+  }
+
+  private createPhaserLfoSiren(instance: SoundInstance) {
+    if (!this.context) return
+    const baseHz = 860
+    const lfoHz = 14
+    const depth = 220
+    const carrier = this.context.createOscillator()
+    carrier.type = 'square'
     carrier.frequency.value = baseHz
     const lfo = this.context.createOscillator()
-    lfo.type = lfoType
-    lfo.frequency.value = isWail ? 0 : lfoHz
+    lfo.type = 'triangle'
+    lfo.frequency.value = lfoHz
     const lfoGain = this.context.createGain()
-    lfoGain.gain.value = isWail ? 0 : depth
+    lfoGain.gain.value = depth
     const lfoShaper = this.context.createWaveShaper()
     lfoShaper.curve = this.makeWailBiasCurve()
     lfo.connect(lfoShaper)
     lfoShaper.connect(lfoGain)
     lfoGain.connect(carrier.frequency)
-    this.connectOscWithTimbre(instance, carrier, 3400, isWailOrYelp ? 6 : 10)
-    if (isWail) carrier.frequency.value = 500
+    this.connectOscWithTimbre(instance, carrier, 3600, 10)
     carrier.start()
     lfo.start()
 
@@ -851,16 +996,11 @@ class AudioEngine {
     instance.oscillators.push(carrier)
     instance.lfoNodes.push(lfo)
     instance.modulationNodes.push(lfoGain, lfoShaper)
-    instance.debug.frequencyHz = isWail ? 500 : baseHz
-    instance.debug.modulation = modulationName
+    instance.debug.frequencyHz = baseHz
+    instance.debug.modulation = 'phaser-lfo'
     this.attachAnalogDrift(instance, carrier, 0.05, 3)
     this.attachGainWobble(instance, instance.gainNode.gain, 0.1, 0.02)
     this.attachNoiseLayer(instance, 0.007)
-    if (isWailOrYelp) this.applyWailYelpVoicing(instance)
-    if (isWail) this.applyAsymmetricWailAutomation(instance, carrier)
-    if (modulationName === 'yelp-lfo') {
-      instance.gainNode.gain.value = 0.46
-    }
   }
 
   private applyWailYelpVoicing(instance: SoundInstance) {
@@ -873,31 +1013,35 @@ class AudioEngine {
     const presence = this.context.createBiquadFilter()
     presence.type = 'peaking'
     presence.frequency.value = 2000
-    presence.Q.value = 1.0
-    presence.gain.value = 2.2
+    presence.Q.value = 0.95
+    presence.gain.value = 5
     const highShelf = this.context.createBiquadFilter()
     highShelf.type = 'highshelf'
-    highShelf.frequency.value = 3200
-    highShelf.gain.value = 4.2
+    highShelf.frequency.value = 4200
+    highShelf.Q.value = 0.7
+    highShelf.gain.value = 8.5
     const sirenCompressor = this.context.createDynamicsCompressor()
-    sirenCompressor.threshold.value = -16
-    sirenCompressor.knee.value = 12
-    sirenCompressor.ratio.value = 3
-    sirenCompressor.attack.value = 0.004
-    sirenCompressor.release.value = 0.09
+    sirenCompressor.threshold.value = -22
+    sirenCompressor.knee.value = 10
+    sirenCompressor.ratio.value = 6.5
+    sirenCompressor.attack.value = 0.002
+    sirenCompressor.release.value = 0.055
+    const finalBoost = this.context.createGain()
+    finalBoost.gain.value = 1.55
     instance.voiceInput.connect(presence)
     presence.connect(highShelf)
     highShelf.connect(sirenCompressor)
-    sirenCompressor.connect(instance.gainNode)
-    instance.modulationNodes.push(presence, highShelf, sirenCompressor)
+    sirenCompressor.connect(finalBoost)
+    finalBoost.connect(instance.gainNode)
+    instance.modulationNodes.push(presence, highShelf, sirenCompressor, finalBoost)
   }
 
   private applyAsymmetricWailAutomation(instance: SoundInstance, carrier: OscillatorNode) {
     if (!this.context) return
     const minHz = 500
-    const maxHz = 1200
-    const cycleSec = 5
-    const riseSec = cycleSec * 0.6
+    const maxHz = 1500
+    const cycleSec = 4
+    const riseSec = cycleSec * 0.72
     const horizonCycles = 90
     const start = this.context.currentTime + 0.01
     carrier.frequency.cancelScheduledValues(start)
@@ -1070,6 +1214,17 @@ class AudioEngine {
     return curve
   }
 
+  /** Saturation locale WAIL/YELP : tanh doux, impaire, sans offset DC. */
+  private makeSirenLocalTanhCurve() {
+    const n = 4096
+    const curve = new Float32Array(n)
+    for (let i = 0; i < n; i += 1) {
+      const x = (i / (n - 1)) * 2 - 1
+      curve[i] = Math.tanh(2.55 * x)
+    }
+    return curve
+  }
+
   private logDebug(message: string) {
     this.debugLog.push(`${new Date().toISOString()} ${message}`)
     if (this.debugLog.length > 100) this.debugLog.shift()
@@ -1078,7 +1233,7 @@ class AudioEngine {
 
   private logDestinationRouting() {
     const routing = [
-      'Audio route: source -> mixGain -> preGain -> saturator -> compressor -> masterGain -> HP180 -> PresenceEQ -> DCBlocker -> limiter -> destination',
+      'Audio route: source -> mixGain -> preEQ(HP180) -> preGain -> saturator -> compressor -> makeupGain -> masterGain -> presenceEQ -> highShelf -> DCBlocker -> limiter -> destination',
       'Analyzer route: masterGain -> analyser (parallel, no destination)',
       'Nodes connected to destination: finalLimiter only',
     ]
