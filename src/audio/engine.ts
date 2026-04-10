@@ -739,42 +739,27 @@ class AudioEngine {
     instance.debug.frequencyHz = freqs[0] ?? 700
   }
 
+  /** Même chaîne que `createTwoToneFr` (timbre FR + gate + comp + EQ), fréquences / pas police. */
   private createPoliceFrTwoTone(
     instance: SoundInstance,
     freqs: number[],
     everyMs: number,
     modulation: string,
   ) {
-    if (!this.context) return
-    const oscA = this.context.createOscillator()
-    oscA.type = 'sawtooth'
-    oscA.frequency.value = this.clampFrequencyHz(freqs[0] ?? 800)
-    oscA.detune.value = -3
-    this.connectFrOscWithTimbre(instance, oscA, 1800, 7)
-    // FR tones need stronger pre-drive into unified master chain.
-    instance.voiceInput.gain.value = 1.41
-    oscA.start()
+    const voice = this.createFrTwoToneVoice(instance, freqs[0] ?? 800, undefined, {
+      withDrift: !this.frDebugIsolation,
+      withWobble: false,
+      withNoise: false,
+      withEq: true,
+      withGateCompressor: true,
+    })
+    if (!voice) return
+    const { oscA } = voice
     instance.mainOsc = oscA
-    instance.oscillators.push(oscA)
     instance.debug.frequencyHz = freqs[0] ?? 800
     instance.debug.modulation = modulation
-    if (!this.frDebugIsolation) this.attachAnalogDrift(instance, oscA, 0.05, 1.5)
-    const policeCompressor = this.context.createDynamicsCompressor()
-    policeCompressor.threshold.value = -32
-    policeCompressor.knee.value = 14
-    policeCompressor.ratio.value = 4.8
-    policeCompressor.attack.value = 0.005
-    policeCompressor.release.value = 0.2
-    try {
-      instance.voiceInput.disconnect()
-    } catch {
-      // no-op
-    }
-    instance.voiceInput.connect(policeCompressor)
-    policeCompressor.connect(instance.gainNode)
-    instance.modulationNodes.push(policeCompressor)
 
-    const start = this.context.currentTime + 0.01
+    const start = this.context!.currentTime + 0.01
     const step = everyMs / 1000
     const horizonSteps = 600
     for (let i = 0; i < horizonSteps; i += 1) {
