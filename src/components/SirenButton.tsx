@@ -7,8 +7,12 @@ type HoldEvent = PointerEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonEleme
 const HOLD_HINT_KEY = 'er_hold_onboarding_done'
 const HOLD_HINT_EVENT = 'er-dismiss-hold-hint'
 
+type SplitLabel = { line1: string; line2: string }
+
 type Props = {
   label: string
+  /** Libellé sur deux lignes (ex. Q-SIREN + ON/OFF), sans troncature. */
+  splitLabel?: SplitLabel
   icon?: ReactNode
   active?: boolean
   hold?: boolean
@@ -22,6 +26,7 @@ type Props = {
 
 export function SirenButton({
   label,
+  splitLabel,
   icon,
   active = false,
   hold = false,
@@ -63,7 +68,12 @@ export function SirenButton({
     return () => window.clearTimeout(t)
   }, [hintVisible, dismissHoldHint])
 
-  const ariaLabel = danger ? 'Stop all sounds' : hold ? `${label}, siren, hold to play` : `${label} siren`
+  const labelForA11y = splitLabel ? `${splitLabel.line1} ${splitLabel.line2}` : label
+  const ariaLabel = danger
+    ? 'Stop all sounds'
+    : hold
+      ? `${labelForA11y}, siren, hold to play`
+      : `${labelForA11y} siren`
 
   const holdHelpTitle =
     hold && !disabled ? [title, 'HOLD to activate'].filter(Boolean).join(' · ') : title
@@ -133,7 +143,10 @@ export function SirenButton({
       onKeyUp={handleKeyUp}
       onBlur={handleBlur}
       className={clsx(
-        'relative min-h-16 w-full min-w-0 select-none rounded-xl border px-4 py-2 text-left text-base font-semibold tracking-normal transition active:scale-[0.98] disabled:active:scale-100 md:min-h-14 md:py-1.5 md:text-sm',
+        'relative w-full min-w-0 select-none rounded-xl border px-4 font-semibold tracking-normal transition active:scale-[0.98] disabled:active:scale-100',
+        splitLabel
+          ? 'min-h-[4.5rem] py-3 text-sm md:min-h-16'
+          : 'min-h-16 py-2 text-left text-base md:min-h-14 md:py-1.5 md:text-sm',
         danger
           ? 'border-red-400 bg-red-600 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.25),0_0_10px_rgba(239,68,68,0.7)] ring-2 ring-red-400 hover:bg-red-500 disabled:hover:bg-red-600'
           : [
@@ -147,6 +160,7 @@ export function SirenButton({
                   : 'hover:border-slate-500 hover:bg-slate-900/95',
             ],
         disabled && 'cursor-not-allowed border-slate-700 opacity-55 contrast-more:opacity-70',
+        splitLabel && 'text-center',
       )}
     >
       {title ? (
@@ -155,11 +169,28 @@ export function SirenButton({
         </span>
       ) : null}
       <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <div className="flex min-w-0 items-center gap-2">
-            {icon}
-            <span className="truncate">{label}</span>
-          </div>
+        <div
+          className={clsx(
+            'flex min-w-0 flex-1 flex-col gap-0.5',
+            splitLabel && 'items-center justify-center text-center',
+          )}
+        >
+          {splitLabel ? (
+            <div className="flex w-full items-center justify-center gap-2">
+              {icon}
+              <span className="flex flex-col items-center leading-tight whitespace-normal">
+                <span className="font-semibold">{splitLabel.line1}</span>
+                <span className={clsx('font-semibold', active ? 'text-white' : 'text-slate-300')}>
+                  {splitLabel.line2}
+                </span>
+              </span>
+            </div>
+          ) : (
+            <div className="flex min-w-0 items-center gap-2">
+              {icon}
+              <span className="truncate">{label}</span>
+            </div>
+          )}
           {hold && hintVisible ? (
             <span className="text-[10px] font-medium text-slate-500">Press and hold</span>
           ) : null}

@@ -114,9 +114,10 @@ export function SirenControlPage() {
     const isStop = sound.mode === 'stop'
     if (sound.kind === 'qsiren') {
       return (
-        <div key={sound.id} className="grid grid-cols-2 gap-2 md:col-span-2">
+        <div key={sound.id} className="col-span-full grid grid-cols-2 gap-3">
           <SirenButton
             label="Q-SIREN ON/OFF"
+            splitLabel={{ line1: 'Q-SIREN', line2: 'ON/OFF' }}
             icon={soundDefinitionIcon(sound)}
             active={isActive}
             onClick={() => {
@@ -130,6 +131,7 @@ export function SirenControlPage() {
           />
           <SirenButton
             label="Q-SIREN HOLD"
+            splitLabel={{ line1: 'Q-SIREN', line2: 'HOLD' }}
             icon={soundDefinitionIcon(sound)}
             active={isActive}
             hold
