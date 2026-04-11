@@ -1,7 +1,7 @@
+import { AlertTriangle } from 'lucide-react'
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
 import { MasterLevelMeter } from '../components/audio/MasterLevelMeter'
-import { ActiveSounds } from '../components/ActiveSounds'
 import { AudioDebugPanel } from '../components/AudioDebugPanel'
 import { AudioVisualizer } from '../components/AudioVisualizer'
 import { PanelLayout } from '../components/PanelLayout'
@@ -64,8 +64,6 @@ export function SirenControlPage() {
   const hasAirHorn = audioEngine.hasAirHorn()
 
   if (!scenario) return <Navigate to="/" replace />
-
-  const activeNames = scenario.defs.filter((d) => active[d.id]).map((d) => d.label)
 
   const sirenDefs = scenario.defs.filter((d) => !(d.kind === 'horn' && d.mode === 'hold'))
   const hornDefs = scenario.defs.filter((d) => d.kind === 'horn' && d.mode === 'hold')
@@ -146,35 +144,42 @@ export function SirenControlPage() {
       : undefined
 
     return (
-      <SirenButton
-        key={sound.id}
-        label={sound.label}
-        icon={soundDefinitionIcon(sound)}
-        active={isActive}
-        hold={sound.mode === 'hold'}
-        danger={isStop}
-        disabled={hornDisabled}
-        title={hornTooltip}
-        onClick={() => {
-          if (hornDisabled) return
-          if (sound.mode === 'toggle') {
-            vibrate()
-            void toggleSound(sound, region, emergency)
+      <div key={sound.id} className="w-full">
+        <SirenButton
+          label={sound.label}
+          icon={soundDefinitionIcon(sound)}
+          active={isActive}
+          hold={sound.mode === 'hold'}
+          danger={isStop}
+          disabled={hornDisabled}
+          title={hornTooltip}
+          onClick={() => {
+            if (hornDisabled) return
+            if (sound.mode === 'toggle') {
+              vibrate()
+              void toggleSound(sound, region, emergency)
+            }
+            if (isStop) {
+              vibrate([18, 30, 18])
+              stopAll(sound.stopChirp)
+            }
+          }}
+          onHoldStart={
+            sound.mode === 'hold' && !hornDisabled
+              ? (e: HoldEvent) => {
+                  void onHoldStart(sound.id, e)
+                }
+              : undefined
           }
-          if (isStop) {
-            vibrate([18, 30, 18])
-            stopAll(sound.stopChirp)
-          }
-        }}
-        onHoldStart={
-          sound.mode === 'hold' && !hornDisabled
-            ? (e: HoldEvent) => {
-                void onHoldStart(sound.id, e)
-              }
-            : undefined
-        }
-        onHoldEnd={sound.mode === 'hold' ? () => onHoldEnd(sound.id) : undefined}
-      />
+          onHoldEnd={sound.mode === 'hold' ? () => onHoldEnd(sound.id) : undefined}
+        />
+        {hornDisabled ? (
+          <div className="mt-1 inline-flex items-center gap-1 text-[11px] text-amber-400">
+            <AlertTriangle className="size-3 shrink-0 opacity-90" strokeWidth={2} aria-hidden />
+            <span>Audio file required — see README</span>
+          </div>
+        ) : null}
+      </div>
     )
   }
 
@@ -196,12 +201,11 @@ export function SirenControlPage() {
         <section className={sectionDividerClass}>
           <h2 className={sectionTitleClass}>CONTROL</h2>
           <div className="space-y-6">
-            <MasterLevelMeter
-              rms={debugSnapshot.masterPostLimiterRms}
-              db={debugSnapshot.masterPostLimiterDbFs}
-            />
             <VolumeSlider value={masterVolume} onChange={setMasterVolume} />
-            <ActiveSounds names={activeNames} />
+            <MasterLevelMeter
+              leftDb={debugSnapshot.masterPostLimiterDbFs}
+              rightDb={debugSnapshot.masterPostLimiterDbFs}
+            />
             <AudioVisualizer />
             {isDebug ? (
               <AudioDebugPanel
