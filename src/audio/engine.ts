@@ -30,6 +30,12 @@ import { buildNoiseBuffer, getAssetUrl, getDbAtHz, measureRMS } from './utils/au
 
 const SAMPLE_EXTENSIONS = ['mp3', 'wav', 'ogg']
 
+/** Headroom global sur le gain de voix (évite la saturation au bus). */
+const PLAY_HEADROOM = 0.7
+/** Atténuation quand une autre voix joue déjà (mix plus propre). */
+const MULTI_VOICE_COMPENSATION = 0.75
+const MAX_SIMULTANEOUS_VOICES = 2
+
 class AudioEngine {
   private context?: AudioContext
   private masterChain?: MasterChain
@@ -225,9 +231,10 @@ class AudioEngine {
     )
   }
 
-  play(id: string, preset: SoundPreset) {
-    if (!this.context || !this.mixGain || !this.initialized) return
-    if (this.active.has(id)) return
+  play(id: string, preset: SoundPreset): boolean {
+    if (!this.context || !this.mixGain || !this.initialized) return false
+    if (this.active.has(id)) return false
+    if (this.active.size >= MAX_SIMULTANEOUS_VOICES) return false
 
     let def = getSoundDefinitionById(id)
     if (!def && id.startsWith('__probe-')) {
@@ -274,6 +281,9 @@ class AudioEngine {
     const normalizedGain = this.normalizePresetVolume(preset.kind, preset.gain)
     const calibration = AUDIO_CALIBRATION[id] ?? 1
     const finalGain = normalizedGain * calibration
+    const otherVoices = this.active.size
+    const multiCompensation = otherVoices >= 1 ? MULTI_VOICE_COMPENSATION : 1
+    const safeGain = finalGain * PLAY_HEADROOM * multiCompensation
     const hornSampleInstant =
       instance.debug.modulation === 'horn-us-police-sample' ||
       instance.debug.modulation === 'horn-us-fire-sample'
@@ -281,13 +291,14 @@ class AudioEngine {
       gainNode.gain.cancelScheduledValues(now)
       const hornMul =
         instance.debug.modulation === 'horn-us-police-sample' ? HORN_POLICE_GAIN : HORN_FIRE_GAIN
-      gainNode.gain.setValueAtTime(finalGain * hornMul, now)
+      gainNode.gain.setValueAtTime(safeGain * hornMul, now)
     } else {
       gainNode.gain.setValueAtTime(0, now)
-      gainNode.gain.linearRampToValueAtTime(finalGain, now + 0.02)
+      gainNode.gain.linearRampToValueAtTime(safeGain, now + 0.02)
     }
     this.active.set(id, instance)
     this.logDebug(`[play] ${id} kind=${preset.kind}`)
+    return true
   }
 
   private getUnifiedGain(kind: SoundKind) {

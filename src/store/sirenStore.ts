@@ -8,16 +8,37 @@ const isWailOrYelp = (kind: SoundDefinition['kind']) => kind === 'wail' || kind 
 const isFrAmbuTone = (kind: SoundDefinition['kind']) => kind === 'twoTone' || kind === 'threeTone' || kind === 'twoToneUmh'
 const isEuAmbulance = (d: SoundDefinition) => d.regionStyle === 'eu' && d.variant === 'ambulance'
 
+const EU_AMBU_AUX_IDS = ['eu-ambu-two-tone', 'eu-ambu-umh'] as const
+const EU_AMBU_ORPHAN_WAIL_IDS = ['eu-ambu-wail', 'eu-ambu-yelp'] as const
+
+/** Ambulance EU uniquement : coupe WAIL/YELP s’il n’y a ni TWO-TONE ni UMH actif. */
+function snapEuAmbulanceWailYelpIfOrphaned(active: ActiveMap) {
+  const hasAux = EU_AMBU_AUX_IDS.some((id) => active[id])
+  if (hasAux) return
+  for (const id of EU_AMBU_ORPHAN_WAIL_IDS) {
+    if (active[id]) {
+      audioEngine.stop(id)
+      active[id] = false
+    }
+  }
+}
+
+const isEuAmbuWailOrYelp = (sound: SoundDefinition) =>
+  isEuAmbulance(sound) && (sound.id === 'eu-ambu-wail' || sound.id === 'eu-ambu-yelp')
+
 const canPlayTogether = (soundA: SoundDefinition, soundB: SoundDefinition) => {
   if (soundA.id === soundB.id) return true
   if (isWailOrYelp(soundA.kind) && isWailOrYelp(soundB.kind)) return false
   if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
   if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
   if (isEuAmbulance(soundA) && isEuAmbulance(soundB)) {
-    const aTone = isFrAmbuTone(soundA.kind)
-    const bTone = isFrAmbuTone(soundB.kind)
+    const threeA = soundA.kind === 'threeTone'
+    const threeB = soundB.kind === 'threeTone'
     const aWailYelp = isWailOrYelp(soundA.kind)
     const bWailYelp = isWailOrYelp(soundB.kind)
+    if ((threeA && bWailYelp) || (threeB && aWailYelp)) return false
+    const aTone = isFrAmbuTone(soundA.kind)
+    const bTone = isFrAmbuTone(soundB.kind)
     if ((aTone && bWailYelp) || (bTone && aWailYelp)) return true
   }
   return true
@@ -27,10 +48,13 @@ const canIgnoreExplicitExclusive = (soundA: SoundDefinition, soundB: SoundDefini
   if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
   if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
   if (isEuAmbulance(soundA) && isEuAmbulance(soundB)) {
-    const aTone = isFrAmbuTone(soundA.kind)
-    const bTone = isFrAmbuTone(soundB.kind)
+    const threeA = soundA.kind === 'threeTone'
+    const threeB = soundB.kind === 'threeTone'
     const aWailYelp = isWailOrYelp(soundA.kind)
     const bWailYelp = isWailOrYelp(soundB.kind)
+    if ((threeA && bWailYelp) || (threeB && aWailYelp)) return false
+    const aTone = isFrAmbuTone(soundA.kind)
+    const bTone = isFrAmbuTone(soundB.kind)
     if ((aTone && bWailYelp) || (bTone && aWailYelp)) return true
   }
   return false
@@ -105,7 +129,25 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
     const isActive = !!get().active[sound.id]
     if (isActive) {
       audioEngine.stop(sound.id)
-      set((state) => ({ active: { ...state.active, [sound.id]: false } }))
+      set((state) => {
+        const next = { ...state.active, [sound.id]: false }
+        const auxTurnedOff =
+          scenario.region === 'europe' &&
+          scenario.emergency === 'ambulance' &&
+          (sound.id === 'eu-ambu-two-tone' || sound.id === 'eu-ambu-umh')
+        if (auxTurnedOff) {
+          snapEuAmbulanceWailYelpIfOrphaned(next)
+        }
+        return { active: next }
+      })
+      return
+    }
+
+    const activeBefore = get().active
+    const isEuAmbu = scenario.region === 'europe' && scenario.emergency === 'ambulance'
+    const isEuAmbuWailYelp = isEuAmbuWailOrYelp(sound)
+    const hasAuxActive = !!(activeBefore['eu-ambu-two-tone'] || activeBefore['eu-ambu-umh'])
+    if (isEuAmbu && isEuAmbuWailYelp && !hasAuxActive) {
       return
     }
 
@@ -116,11 +158,15 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       return { active: next }
     })
 
-    audioEngine.play(sound.id, {
+    const played = audioEngine.play(sound.id, {
       kind: sound.kind,
       regionStyle: sound.regionStyle,
       variant: sound.variant,
     })
+    if (!played) {
+      set((state) => ({ active: { ...state.active, [sound.id]: false } }))
+      return
+    }
 
     // Ensure dangling toggles from previous page are removed.
     for (const def of scenario.defs) {
@@ -140,12 +186,14 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
     if (sound.kind === 'qsiren') {
       if (!get().active[sound.id]) {
-        audioEngine.play(sound.id, {
+        const ok = audioEngine.play(sound.id, {
           kind: sound.kind,
           regionStyle: sound.regionStyle,
           variant: sound.variant,
         })
-        set((state) => ({ active: { ...state.active, [sound.id]: true } }))
+        if (ok) {
+          set((state) => ({ active: { ...state.active, [sound.id]: true } }))
+        }
       }
       audioEngine.setQSirenBoost(sound.id, 1)
       return
@@ -158,11 +206,14 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       setSound(next, sound.id, true)
       return { active: next }
     })
-    audioEngine.play(sound.id, {
+    const hornOk = audioEngine.play(sound.id, {
       kind: sound.kind,
       regionStyle: sound.regionStyle,
       variant: sound.variant,
     })
+    if (!hornOk) {
+      set((state) => ({ active: { ...state.active, [sound.id]: false } }))
+    }
   },
 
   endHold: (soundId) => {

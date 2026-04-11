@@ -171,7 +171,7 @@ export const SIREN_CONFIG = {
         label: 'UMH',
         mode: 'toggle',
         kind: 'twoToneUmh',
-        exclusiveWith: ['eu-ambu-two-tone', 'eu-ambu-three-tone', 'eu-ambu-wail', 'eu-ambu-yelp'],
+        exclusiveWith: ['eu-ambu-two-tone', 'eu-ambu-three-tone'],
         ...sx('eu', 'ambulance'),
       },
       {
@@ -187,7 +187,7 @@ export const SIREN_CONFIG = {
         label: 'WAIL',
         mode: 'toggle',
         kind: 'wail',
-        exclusiveWith: ['eu-ambu-three-tone', 'eu-ambu-umh'],
+        exclusiveWith: ['eu-ambu-three-tone'],
         ...sx('eu', 'ambulance'),
       },
       {
@@ -195,7 +195,7 @@ export const SIREN_CONFIG = {
         label: 'YELP',
         mode: 'toggle',
         kind: 'yelp',
-        exclusiveWith: ['eu-ambu-three-tone', 'eu-ambu-umh'],
+        exclusiveWith: ['eu-ambu-three-tone'],
         ...sx('eu', 'ambulance'),
       },
       { id: 'eu-ambu-stop', label: 'STOP', mode: 'stop', kind: 'horn', ...sx('eu', 'ambulance') },

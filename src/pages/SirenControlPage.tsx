@@ -143,6 +143,13 @@ export function SirenControlPage() {
         </div>
       )
     }
+    const euAmbuAuxOn = !!active['eu-ambu-two-tone'] || !!active['eu-ambu-umh']
+    const isEuAmbuWailYelpRow =
+      scenario.region === 'europe' &&
+      scenario.emergency === 'ambulance' &&
+      (sound.id === 'eu-ambu-wail' || sound.id === 'eu-ambu-yelp')
+    const euAmbuWailYelpBlocked = isEuAmbuWailYelpRow && !euAmbuAuxOn && !isActive
+
     const hornSampleMissing =
       (sound.id === 'amer-police-horn' && !hasPoliceHorn) ||
       (sound.id === 'amer-fire-airhorn' && !hasAirHorn)
@@ -161,10 +168,10 @@ export function SirenControlPage() {
           active={isActive}
           hold={sound.mode === 'hold'}
           danger={isStop}
-          disabled={hornDisabled}
-          title={hornTooltip}
+          disabled={hornDisabled || euAmbuWailYelpBlocked}
+          title={euAmbuWailYelpBlocked ? 'Requires TWO-TONE or UMH' : hornTooltip}
           onClick={() => {
-            if (hornDisabled) return
+            if (hornDisabled || euAmbuWailYelpBlocked) return
             if (sound.mode === 'toggle') {
               vibrate()
               void toggleSound(sound, region, emergency)
@@ -188,6 +195,10 @@ export function SirenControlPage() {
             <AlertTriangle className="size-3 shrink-0 opacity-90" strokeWidth={2} aria-hidden />
             <span>Audio file required — see README</span>
           </div>
+        ) : euAmbuWailYelpBlocked ? (
+          <p className="mt-1 text-[11px] text-slate-500" role="status">
+            Requires TWO-TONE or UMH
+          </p>
         ) : null}
       </div>
     )
