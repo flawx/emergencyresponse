@@ -7,9 +7,9 @@ type DebugVoice = {
 type Props = {
   voices: Record<string, DebugVoice>
   logs: string[]
-  /** RMS linéaire post-limiteur (analyseur produit), null si indisponible. */
+  /** Linear RMS after master limiter (analyser tap), null if unavailable. */
   masterPostLimiterRms: number | null
-  /** dBFS approximatif : 20·log10(RMS), null si silence / indisponible. */
+  /** Approximate dBFS: 20·log10(RMS), null if silent / unavailable. */
   masterPostLimiterDbFs: number | null
 }
 
@@ -25,28 +25,30 @@ export function AudioDebugPanel({
     masterPostLimiterDbFs === null ? '—' : `${masterPostLimiterDbFs.toFixed(2)} dBFS`
 
   return (
-    <div className="rounded-xl border border-amber-700/60 bg-amber-950/20 p-3">
-      <div className="mb-2 text-xs uppercase tracking-wide text-amber-300">Debug Audio (temporaire)</div>
-      <div className="mb-2 rounded bg-black/20 px-2 py-1.5 font-mono text-[11px] text-amber-200">
-        <span className="text-amber-400/90">Post-limiteur (master)</span>
-        <span className="mx-2 text-amber-600">|</span>
-        RMS {rmsLabel}
-        <span className="mx-2 text-amber-600">|</span>
-        {dbLabel}
-      </div>
-      <div className="space-y-1 text-xs text-amber-100">
-        {Object.entries(voices).length === 0 ? (
-          <div>Aucune voix active</div>
-        ) : (
-          Object.entries(voices).map(([id, v]) => (
-            <div key={id} className="rounded bg-black/20 px-2 py-1">
-              {id} | {v.frequencyHz.toFixed(1)} Hz | HOLD: {v.holdActive ? 'ON' : 'OFF'} | {v.modulation}
-            </div>
-          ))
-        )}
-      </div>
-      <div className="mt-2 max-h-24 overflow-auto rounded bg-black/20 p-2 text-[11px] text-amber-200">
-        {logs.length === 0 ? <div>Pas de logs</div> : logs.map((line, idx) => <div key={`${idx}-${line}`}>{line}</div>)}
+    <div className="rounded-xl border border-slate-800 bg-panel-900 p-3">
+      <div className="flex flex-col gap-2">
+        <div className="text-xs uppercase tracking-wider text-slate-500">Audio debug</div>
+        <div className="rounded-lg bg-slate-950/80 px-2 py-2 font-mono text-[11px] text-slate-300">
+          <span className="text-slate-500">Master post-limiter</span>
+          <span className="mx-2 text-slate-600">|</span>
+          RMS {rmsLabel}
+          <span className="mx-2 text-slate-600">|</span>
+          {dbLabel}
+        </div>
+        <div className="space-y-1 text-xs text-slate-400">
+          {Object.entries(voices).length === 0 ? (
+            <div>No active sounds</div>
+          ) : (
+            Object.entries(voices).map(([id, v]) => (
+              <div key={id} className="rounded-lg bg-slate-950/80 px-2 py-1.5">
+                {id} | {v.frequencyHz.toFixed(1)} Hz | HOLD: {v.holdActive ? 'ON' : 'OFF'} | {v.modulation}
+              </div>
+            ))
+          )}
+        </div>
+        <div className="max-h-24 overflow-auto rounded-lg bg-slate-950/80 p-2 text-[11px] text-slate-400">
+          {logs.length === 0 ? <div>No logs</div> : logs.map((line, idx) => <div key={`${idx}-${line}`}>{line}</div>)}
+        </div>
       </div>
     </div>
   )

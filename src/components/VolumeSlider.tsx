@@ -11,11 +11,12 @@ export function VolumeSlider({ value, onChange }: Props) {
   const labelId = `${id}-label`
   const pct = Math.round(value * 100)
   return (
-    <div className="rounded-xl border border-slate-800 bg-panel-900 p-3">
+    <div className="rounded-xl border border-slate-800 bg-panel-800 p-3">
+      <div className="flex flex-col gap-2">
       <label
         id={labelId}
         htmlFor={id}
-        className="mb-2 block text-xs font-medium uppercase tracking-wide text-slate-300"
+        className="block text-xs uppercase tracking-wider text-slate-500"
       >
         Master volume
       </label>
@@ -31,6 +32,7 @@ export function VolumeSlider({ value, onChange }: Props) {
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full accent-cyan-400"
       />
+      </div>
     </div>
   )
 }

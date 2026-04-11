@@ -8,7 +8,8 @@ export function ActiveSounds({ names }: Props) {
   const headingId = `active-sounds-${useId().replace(/:/g, '')}`
   return (
     <div className="rounded-xl border border-slate-800 bg-panel-900 p-3">
-      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-300" id={headingId}>
+      <div className="flex flex-col gap-2">
+      <div className="text-xs uppercase tracking-wider text-slate-500" id={headingId}>
         Active sounds
       </div>
       {names.length === 0 ? (
@@ -29,6 +30,7 @@ export function ActiveSounds({ names }: Props) {
           ))}
         </ul>
       )}
+      </div>
     </div>
   )
 }

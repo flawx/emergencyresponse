@@ -33,7 +33,8 @@ export function AudioVisualizer() {
 
   return (
     <div className="rounded-xl border border-slate-800 bg-panel-900 p-3">
-      <div className="mb-2 text-xs uppercase tracking-wide text-slate-400">Audio Visualizer</div>
+      <div className="flex flex-col gap-2">
+      <div className="text-xs uppercase tracking-wider text-slate-500">Audio spectrum</div>
       <div className="flex h-12 items-end gap-1">
         {Array.from({ length: BAR_COUNT }, (_, i) => (
           <div
@@ -45,6 +46,7 @@ export function AudioVisualizer() {
             style={{ transform: 'scaleY(0.2)' }}
           />
         ))}
+      </div>
       </div>
     </div>
   )
