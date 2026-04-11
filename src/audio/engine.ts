@@ -1,5 +1,5 @@
 import { getSoundDefinitionById, type SoundKind } from '../utils/sirenConfig'
-import { AUDIO_CALIBRATION } from './audioCalibration'
+import { resolveAudioCalibration } from './audioCalibration'
 import {
   buildDebugSnapshot,
   logAudioDebug,
@@ -33,7 +33,7 @@ const SAMPLE_EXTENSIONS = ['mp3', 'wav', 'ogg']
 /** Headroom global sur le gain de voix (évite la saturation au bus). */
 const PLAY_HEADROOM = 0.7
 /** Atténuation quand une autre voix joue déjà (mix plus propre). */
-const MULTI_VOICE_COMPENSATION = 0.75
+const MULTI_VOICE_COMPENSATION = 0.65
 const MAX_SIMULTANEOUS_VOICES = 2
 
 class AudioEngine {
@@ -277,13 +277,38 @@ class AudioEngine {
       this.buildSynth(instance)
     }
 
+    if (
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('sourceLevel') === '1'
+    ) {
+      const sourceAnalyser = this.context.createAnalyser()
+      sourceAnalyser.fftSize = 2048
+      instance.voiceInput.connect(sourceAnalyser)
+      instance.modulationNodes.push(sourceAnalyser)
+      window.setTimeout(() => {
+        const rms = measureRMS(sourceAnalyser)
+        const db = rms > 1e-6 ? 20 * Math.log10(rms) : -Infinity
+        console.log(
+          '[SOURCE LEVEL]',
+          id,
+          Number.isFinite(db) ? `${db.toFixed(1)} dBFS` : '-∞ dBFS',
+          '(voiceInput → pre-calibration trim)',
+        )
+      }, 200)
+    }
+
     const now = this.context.currentTime
     const normalizedGain = this.normalizePresetVolume(preset.kind, preset.gain)
-    const calibration = AUDIO_CALIBRATION[id] ?? 1
-    const finalGain = normalizedGain * calibration
+    const calibration = resolveAudioCalibration(id)
+    instance.voiceInput.gain.value *= calibration
+
     const otherVoices = this.active.size
     const multiCompensation = otherVoices >= 1 ? MULTI_VOICE_COMPENSATION : 1
-    const safeGain = finalGain * PLAY_HEADROOM * multiCompensation
+    const trimGain = normalizedGain * PLAY_HEADROOM * multiCompensation
+    this.logDebug(
+      `[GAIN] id=${id} norm=${normalizedGain.toFixed(4)} cal=${calibration} trim=${trimGain.toFixed(4)} voiceIn=${instance.voiceInput.gain.value.toFixed(4)}`,
+    )
+
     const hornSampleInstant =
       instance.debug.modulation === 'horn-us-police-sample' ||
       instance.debug.modulation === 'horn-us-fire-sample'
@@ -291,10 +316,10 @@ class AudioEngine {
       gainNode.gain.cancelScheduledValues(now)
       const hornMul =
         instance.debug.modulation === 'horn-us-police-sample' ? HORN_POLICE_GAIN : HORN_FIRE_GAIN
-      gainNode.gain.setValueAtTime(safeGain * hornMul, now)
+      gainNode.gain.setValueAtTime(trimGain * hornMul, now)
     } else {
       gainNode.gain.setValueAtTime(0, now)
-      gainNode.gain.linearRampToValueAtTime(safeGain, now + 0.02)
+      gainNode.gain.linearRampToValueAtTime(trimGain, now + 0.02)
     }
     this.active.set(id, instance)
     this.logDebug(`[play] ${id} kind=${preset.kind}`)

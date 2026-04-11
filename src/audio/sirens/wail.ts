@@ -37,7 +37,8 @@ export function createWailUnified(
   microGain.connect(sine.frequency)
   microLfo.start()
 
-  connectUnifiedSirenSourceToVoiceInput(ac, instance, merge, { preGain: 1.32, tanhDrive: 2.08 })
+  const wailPreGain = 1.32 * 0.9
+  connectUnifiedSirenSourceToVoiceInput(ac, instance, merge, { preGain: wailPreGain, tanhDrive: 2.08 })
   saw.start()
   sine.start()
 

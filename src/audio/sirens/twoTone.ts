@@ -21,7 +21,8 @@ function createFrTwoToneVoice(
   oscA.frequency.value = clampFrequencyHz(initialFreq)
   oscA.detune.value = -3
   connectFrOscWithTimbre(ac, instance, oscA, 2200, 7)
-  instance.voiceInput.gain.value = 1.41
+  /** Niveau source voix FR (two / three-tone) — aligné vers WAIL / hi-lo avant bus. */
+  instance.voiceInput.gain.value = 2.2
   const gate = ac.createGain()
   gate.gain.value = 1
   try {
@@ -29,40 +30,54 @@ function createFrTwoToneVoice(
   } catch {
     // no-op
   }
+
   instance.voiceInput.connect(gate)
   instance.modulationNodes.push(gate)
   let postGate: AudioNode = gate
   if (withGateCompressor) {
     const frCompressor = ac.createDynamicsCompressor()
-    frCompressor.threshold.value = -26
-    frCompressor.knee.value = 14
-    frCompressor.ratio.value = 4
-    frCompressor.attack.value = 0.006
-    frCompressor.release.value = 0.18
+    frCompressor.threshold.value = -12
+    frCompressor.knee.value = 10
+    frCompressor.ratio.value = 2.5
+    frCompressor.attack.value = 0.01
+    frCompressor.release.value = 0.1
     postGate.connect(frCompressor)
     postGate = frCompressor
     instance.modulationNodes.push(frCompressor)
+
+    const makeup = ac.createGain()
+    makeup.gain.value = 1.4
+    frCompressor.connect(makeup)
+    postGate = makeup
+    instance.modulationNodes.push(makeup)
   }
   if (withEq) {
+    const lowMid = ac.createBiquadFilter()
+    lowMid.type = 'peaking'
+    lowMid.frequency.value = 500
+    lowMid.Q.value = 1
+    lowMid.gain.value = 2
     const bp1 = ac.createBiquadFilter()
     bp1.type = 'peaking'
     bp1.frequency.value = 1200
     bp1.Q.value = 1.1
-    bp1.gain.value = 3.5
+    bp1.gain.value = 2.5
     const bp2 = ac.createBiquadFilter()
     bp2.type = 'peaking'
     bp2.frequency.value = 1800
     bp2.Q.value = 1.2
-    bp2.gain.value = 3.8
-    const lowShelf = ac.createBiquadFilter()
-    lowShelf.type = 'highshelf'
-    lowShelf.frequency.value = 3200
-    lowShelf.gain.value = -3.2
-    postGate.connect(bp1)
+    bp2.gain.value = 2.5
+    const highShelf = ac.createBiquadFilter()
+    highShelf.type = 'highshelf'
+    highShelf.frequency.value = 3200
+    highShelf.Q.value = 0.7
+    highShelf.gain.value = -2
+    postGate.connect(lowMid)
+    lowMid.connect(bp1)
     bp1.connect(bp2)
-    bp2.connect(lowShelf)
-    postGate = lowShelf
-    instance.modulationNodes.push(bp1, bp2, lowShelf)
+    bp2.connect(highShelf)
+    postGate = highShelf
+    instance.modulationNodes.push(lowMid, bp1, bp2, highShelf)
   }
   postGate.connect(instance.gainNode)
   oscA.start(startAt ?? ac.currentTime)
