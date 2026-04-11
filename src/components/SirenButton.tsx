@@ -133,11 +133,11 @@ export function SirenButton({
       onKeyUp={handleKeyUp}
       onBlur={handleBlur}
       className={clsx(
-        'relative min-h-16 w-full select-none rounded-xl border px-4 py-3 text-left text-base font-semibold transition active:scale-[0.98] disabled:active:scale-100',
+        'relative min-h-16 w-full min-w-0 select-none rounded-xl border px-4 py-2 text-left text-base font-semibold tracking-normal transition active:scale-[0.98] disabled:active:scale-100 md:min-h-14 md:py-1.5 md:text-sm',
         danger
           ? 'border-red-400 bg-red-600 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.25),0_0_10px_rgba(239,68,68,0.7)] ring-2 ring-red-400 hover:bg-red-500 disabled:hover:bg-red-600'
           : [
-              'border-slate-700 bg-slate-900 text-slate-50 shadow-inner',
+              'border-slate-700 bg-slate-900 text-slate-200 shadow-inner',
               active
                 ? isHolding
                   ? 'border-lime-400 bg-lime-500/25 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_8px_rgba(132,204,22,0.6)] ring-2 ring-lime-300'

@@ -33,7 +33,7 @@ export function EmergencySelectPage() {
             key={emergency.id}
             type="button"
             onClick={() => navigate(`/${region as Region}/${emergency.id}`)}
-            className="flex min-h-16 w-full items-center gap-2 rounded-xl border border-slate-700 bg-panel-800 px-4 py-3 text-left text-base font-semibold text-slate-100 transition hover:border-slate-500"
+            className="flex min-h-16 w-full items-center gap-2 rounded-xl border border-slate-700 bg-panel-800 px-4 py-3 text-left text-base font-semibold tracking-normal text-slate-200 transition hover:border-slate-500"
           >
             {emergencyIcon(emergency.id)}
             <span className="truncate">{emergency.label}</span>

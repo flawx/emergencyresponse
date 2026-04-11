@@ -48,7 +48,7 @@ function VuChannelBar({ fillNorm, peak }: { fillNorm: number; peak: number }) {
         className="relative z-10 h-full"
         style={{
           width: `${w * 100}%`,
-          background: 'linear-gradient(to right, #22c55e, #f59e0b 70%, #ef4444 90%)',
+          background: 'linear-gradient(to right, #84cc16, #a3e635 35%, #eab308 72%, #f59e0b 100%)',
           boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.12)',
         }}
       />
@@ -93,7 +93,7 @@ function ChannelRow({
       <div className="relative min-w-0 flex-1">
         <VuChannelBar fillNorm={fillNorm} peak={peak} />
       </div>
-      <span className="w-10 shrink-0 text-right text-[10px] text-slate-400 tabular-nums">
+      <span className="w-10 shrink-0 text-right text-[10px] text-slate-200 tabular-nums">
         {db !== null ? db.toFixed(1) : '—'}
       </span>
     </div>
@@ -151,11 +151,11 @@ export function MasterLevelMeter({ leftDb, rightDb }: Props) {
     <div className="rounded-xl border border-slate-800 bg-panel-800 p-3" title={title}>
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-xs uppercase tracking-wider text-slate-500">Master level</div>
+          <div className="text-xs uppercase tracking-normal text-slate-500">Master level</div>
           <div
             className={clsx(
               'text-[10px] font-bold',
-              clipLatch ? 'text-red-500' : 'text-slate-600',
+              clipLatch ? 'text-red-500' : 'text-slate-500',
             )}
           >
             CLIP
@@ -171,7 +171,7 @@ export function MasterLevelMeter({ leftDb, rightDb }: Props) {
           <span className="w-3 shrink-0" aria-hidden />
           <div className="min-w-0 flex-1">
             <ScaleLabels />
-            <div className="mt-1 text-center text-[10px] text-slate-600">dBFS</div>
+            <div className="mt-1 text-center text-[10px] text-slate-500">dBFS</div>
           </div>
           <span className="w-10 shrink-0" aria-hidden />
         </div>

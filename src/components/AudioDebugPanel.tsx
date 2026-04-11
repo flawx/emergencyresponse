@@ -25,10 +25,10 @@ export function AudioDebugPanel({
     masterPostLimiterDbFs === null ? '—' : `${masterPostLimiterDbFs.toFixed(2)} dBFS`
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-panel-900 p-3">
+    <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
       <div className="flex flex-col gap-2">
-        <div className="text-xs uppercase tracking-wider text-slate-500">Audio debug</div>
-        <div className="rounded-lg bg-slate-950/80 px-2 py-2 font-mono text-[11px] text-slate-300">
+        <div className="text-xs uppercase tracking-normal text-slate-500">Audio debug</div>
+        <div className="rounded-lg bg-slate-950/80 px-2 py-2 font-mono text-[11px] text-slate-200 tabular-nums">
           <span className="text-slate-500">Master post-limiter</span>
           <span className="mx-2 text-slate-600">|</span>
           RMS {rmsLabel}

@@ -66,12 +66,12 @@ export function AudioVisualizer() {
       const smoothBuf = smoothedRef.current!
       const freqBuf = freqDataRef.current!
 
-      analyser.getFloatTimeDomainData(timeBuf)
+      analyser.getFloatTimeDomainData(timeBuf as Float32Array<ArrayBuffer>)
       for (let i = 0; i < fft; i += 1) {
         smoothBuf[i] += (timeBuf[i] - smoothBuf[i]) * WAVE_SMOOTH
       }
 
-      analyser.getByteFrequencyData(freqBuf)
+      analyser.getByteFrequencyData(freqBuf as Uint8Array<ArrayBuffer>)
 
       ctx.clearRect(0, 0, w, h)
       ctx.fillStyle = 'rgba(0, 0, 0, 0.2)'
@@ -82,7 +82,7 @@ export function AudioVisualizer() {
       for (let i = 0; i < bins; i += 1) {
         const v = freqBuf[i] / 255
         const barH = v * h * 0.42
-        ctx.fillStyle = `rgba(34, 197, 94, ${0.05 + v * 0.12})`
+        ctx.fillStyle = `rgba(245, 158, 11, ${0.06 + v * 0.14})`
         ctx.fillRect(i * barW, h - barH, Math.max(1, barW - 0.5), barH)
       }
 
@@ -115,9 +115,9 @@ export function AudioVisualizer() {
   }, [])
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-panel-900 p-3">
+    <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
       <div className="flex flex-col gap-2">
-        <div className="text-xs uppercase tracking-wider text-slate-500">Audio scope</div>
+        <div className="text-xs uppercase tracking-normal text-slate-500">Audio scope</div>
         <div ref={containerRef} className="w-full">
           <canvas ref={canvasRef} className="block h-24 w-full rounded-md bg-slate-950/80" />
         </div>

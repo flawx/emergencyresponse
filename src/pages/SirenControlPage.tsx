@@ -16,8 +16,16 @@ import { soundDefinitionIcon } from '../utils/sirenButtonIcons'
 
 type HoldEvent = PointerEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonElement>
 
-const sectionTitleClass = 'mb-2 text-xs uppercase tracking-wider text-slate-500'
+const sectionTitleClass = 'mb-2 text-xs uppercase tracking-normal text-slate-500'
 const sectionDividerClass = 'border-t border-slate-800 pt-4'
+
+/** Zones distinctes : interactions principales / bleu nuit / gris secondaire */
+const zoneSirensClass =
+  'rounded-xl border border-slate-800 bg-panel-800 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+const zoneHornsClass =
+  'rounded-xl border border-slate-800/90 bg-[#0a1424] p-3 shadow-[inset_0_1px_0_rgba(56,189,248,0.06)]'
+const zoneControlClass =
+  'rounded-xl border border-slate-800 bg-slate-900 p-3 shadow-[inset_0_2px_8px_rgba(0,0,0,0.35)]'
 
 function isAudioDebugEnabled() {
   return (
@@ -106,7 +114,7 @@ export function SirenControlPage() {
     const isStop = sound.mode === 'stop'
     if (sound.kind === 'qsiren') {
       return (
-        <div key={sound.id} className="grid grid-cols-2 gap-2">
+        <div key={sound.id} className="grid grid-cols-2 gap-2 md:col-span-2">
           <SirenButton
             label="Q-SIREN ON/OFF"
             icon={soundDefinitionIcon(sound)}
@@ -144,7 +152,7 @@ export function SirenControlPage() {
       : undefined
 
     return (
-      <div key={sound.id} className="w-full">
+      <div key={sound.id} className="w-full min-w-0">
         <SirenButton
           label={sound.label}
           icon={soundDefinitionIcon(sound)}
@@ -174,7 +182,7 @@ export function SirenControlPage() {
           onHoldEnd={sound.mode === 'hold' ? () => onHoldEnd(sound.id) : undefined}
         />
         {hornDisabled ? (
-          <div className="mt-1 inline-flex items-center gap-1 text-[11px] text-amber-400">
+          <div className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-amber-500">
             <AlertTriangle className="size-3 shrink-0 opacity-90" strokeWidth={2} aria-hidden />
             <span>Audio file required — see README</span>
           </div>
@@ -188,19 +196,28 @@ export function SirenControlPage() {
       <div className="space-y-6">
         <section>
           <h2 className={sectionTitleClass}>SIRENS</h2>
-          <div className="space-y-3">{sirenDefs.map((sound) => renderSoundRow(sound))}</div>
+          <div className={zoneSirensClass}>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {sirenDefs.map((sound) => renderSoundRow(sound))}
+            </div>
+          </div>
         </section>
 
         {hornDefs.length > 0 ? (
           <section className={sectionDividerClass}>
             <h2 className={sectionTitleClass}>HORNS</h2>
-            <div className="space-y-3">{hornDefs.map((sound) => renderSoundRow(sound))}</div>
+            <div className={zoneHornsClass}>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {hornDefs.map((sound) => renderSoundRow(sound))}
+              </div>
+            </div>
           </section>
         ) : null}
 
         <section className={sectionDividerClass}>
           <h2 className={sectionTitleClass}>CONTROL</h2>
-          <div className="space-y-6">
+          <div className={zoneControlClass}>
+            <div className="space-y-6">
             <VolumeSlider value={masterVolume} onChange={setMasterVolume} />
             <MasterLevelMeter
               leftDb={debugSnapshot.masterPostLimiterDbFs}
@@ -215,6 +232,7 @@ export function SirenControlPage() {
                 masterPostLimiterDbFs={debugSnapshot.masterPostLimiterDbFs}
               />
             ) : null}
+            </div>
           </div>
         </section>
       </div>

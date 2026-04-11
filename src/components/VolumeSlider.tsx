@@ -18,7 +18,7 @@ export function VolumeSlider({ value, onChange }: Props) {
         <label
           id={labelId}
           htmlFor={id}
-          className="block text-xs uppercase tracking-wider text-slate-500"
+          className="block text-xs uppercase tracking-normal text-slate-500"
         >
           Master volume
         </label>
@@ -36,7 +36,7 @@ export function VolumeSlider({ value, onChange }: Props) {
             className="volume-slider col-start-1 row-start-1 w-full min-w-0"
             style={{ ['--volume-fill' as string]: fillPct }}
           />
-          <span className="col-start-2 row-start-1 w-12 shrink-0 text-right text-sm text-slate-300 tabular-nums">
+          <span className="col-start-2 row-start-1 w-12 shrink-0 text-right text-sm text-slate-200 tabular-nums">
             {(value * 100).toFixed(0)}%
           </span>
           <div className="col-start-1 row-start-2 mt-1 flex justify-between text-[10px] text-slate-500">
