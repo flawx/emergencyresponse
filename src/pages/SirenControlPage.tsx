@@ -14,6 +14,7 @@ import { useSirenStore } from '../store/sirenStore'
 import type { SoundDefinition } from '../utils/sirenConfig'
 import {
   euAmbuHasBaseMain,
+  getMainModeCaption,
   getOverlayIdForSound,
   getScenario,
   isMainModeToggle,
@@ -132,6 +133,7 @@ export function SirenControlPage() {
     <div key={sound.id} className="min-w-0">
       <SirenButton
         label={sound.label}
+        caption={getMainModeCaption(sound)}
         icon={soundDefinitionIcon(sound)}
         active={mainMode === sound.id}
         exclusiveSlot
@@ -159,7 +161,7 @@ export function SirenControlPage() {
       (sound.id === 'eu-ambu-wail' || sound.id === 'eu-ambu-yelp')
     const euAmbuWailYelpBlocked = isEuAmbuWailYelp && !euAmbuAuxOn && !isActive
     const euAmbuWailYelpNeedsBase =
-      isEuAmbuWailYelp && !euAmbuAuxOn ? 'Requires TWO-TONE or UMH' : undefined
+      isEuAmbuWailYelp && !euAmbuAuxOn ? 'Requires TONE or ALT' : undefined
 
     return (
       <div key={sound.id} className="min-w-0">
@@ -189,8 +191,7 @@ export function SirenControlPage() {
     return (
       <div className="col-span-full grid grid-cols-1 gap-2 sm:grid-cols-2">
         <SirenButton
-          label="Q-SIREN ON/OFF"
-          splitLabel={{ line1: 'Q-SIREN', line2: 'ON/OFF' }}
+          label={sound.label}
           icon={soundDefinitionIcon(sound)}
           active={isActive}
           onClick={() => {
@@ -203,8 +204,8 @@ export function SirenControlPage() {
           }}
         />
         <SirenButton
-          label="Q-SIREN HOLD"
-          splitLabel={{ line1: 'Q-SIREN', line2: 'HOLD' }}
+          label="MAN (HOLD)"
+          splitLabel={{ line1: 'MAN', line2: '(HOLD)' }}
           icon={soundDefinitionIcon(sound)}
           active={isActive}
           hold
@@ -265,10 +266,8 @@ export function SirenControlPage() {
     >
       <div className="space-y-6">
         <section>
-          <h2 className={sectionTitleClass}>Main mode</h2>
-          <p className="mb-2 text-[11px] text-slate-500">
-            Select one mode. Tap again to stop.
-          </p>
+          <h2 className={sectionTitleClass}>Siren</h2>
+          <p className="mb-2 text-[11px] text-slate-500">Select a siren mode</p>
           <div className={zoneSirensClass}>
             <div className="mode-selector grid grid-cols-2 gap-2 sm:grid-cols-3">
               {mainModeDefs.map((sound) => renderMainModeButton(sound))}
@@ -292,9 +291,9 @@ export function SirenControlPage() {
 
         {hasOverlaySection ? (
           <section className={sectionDividerClass}>
-            <h2 className={sectionTitleClass}>Overlays</h2>
+            <h2 className={sectionTitleClass}>Aux</h2>
             <p className="mb-2 text-[11px] text-slate-500">
-              Optional overlays on the main mode: Q-SIREN; EU ambulance WAIL/YELP when TWO-TONE or UMH is selected.
+              AUX on the selected mode: MAN (manual); EU ambulance WAIL/YELP when TONE or ALT is on.
             </p>
             <div className={zoneOverlaysClass}>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -317,7 +316,7 @@ export function SirenControlPage() {
 
         {hornDefs.length > 0 ? (
           <section className={sectionDividerClass}>
-            <h2 className={sectionTitleClass}>Horn / manual</h2>
+            <h2 className={sectionTitleClass}>Manual / horn</h2>
             <div className={zoneHornsClass}>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 {hornDefs.map((sound) => renderHornRow(sound))}

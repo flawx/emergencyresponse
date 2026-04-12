@@ -135,6 +135,14 @@ export function sameMainModeFamily(a: SoundDefinition, b: SoundDefinition): bool
   return fa !== 'other' && fa === fb
 }
 
+/** Sous-titre discret sous les modes principaux (terminologie type contrôleur). */
+export function getMainModeCaption(sound: SoundDefinition): string | undefined {
+  if (sound.kind === 'wail') return 'Continuous'
+  if (sound.kind === 'yelp') return 'Fast'
+  if (sound.kind === 'phaser') return 'Rapid'
+  return undefined
+}
+
 const sx = (regionStyle: RegionStyle, variant: SoundVariant) => ({ regionStyle, variant })
 
 const cfg = (region: Region, emergency: EmergencyType, defs: SoundDefinition[]) => ({
@@ -146,7 +154,7 @@ const cfg = (region: Region, emergency: EmergencyType, defs: SoundDefinition[]) 
 export const SIREN_CONFIG = {
   america: {
     fire: cfg('america', 'fire', [
-      { id: 'amer-fire-qsiren', label: 'Q-SIREN', mode: 'toggle', kind: 'qsiren', ...sx('us', 'fire') },
+      { id: 'amer-fire-qsiren', label: 'MAN', mode: 'toggle', kind: 'qsiren', ...sx('us', 'fire') },
       {
         id: 'amer-fire-wail',
         label: 'WAIL',
@@ -233,7 +241,7 @@ export const SIREN_CONFIG = {
     fire: cfg('europe', 'fire', [
       {
         id: 'eu-fire-two-a',
-        label: 'TWO-TONE (A)',
+        label: 'TONE 1',
         mode: 'toggle',
         kind: 'twoToneA',
         exclusiveWith: ['eu-fire-two-m'],
@@ -241,7 +249,7 @@ export const SIREN_CONFIG = {
       },
       {
         id: 'eu-fire-two-m',
-        label: 'TWO-TONE (M)',
+        label: 'MAN (HOLD)',
         mode: 'hold',
         kind: 'twoToneM',
         exclusiveWith: ['eu-fire-two-a'],
@@ -252,7 +260,7 @@ export const SIREN_CONFIG = {
     police: cfg('europe', 'police', [
       {
         id: 'eu-police-two-a',
-        label: 'TWO-TONE (A)',
+        label: 'TONE 1',
         mode: 'toggle',
         kind: 'twoToneA',
         exclusiveWith: ['eu-police-two-m'],
@@ -260,7 +268,7 @@ export const SIREN_CONFIG = {
       },
       {
         id: 'eu-police-two-m',
-        label: 'TWO-TONE (M)',
+        label: 'MAN (HOLD)',
         mode: 'hold',
         kind: 'twoToneM',
         exclusiveWith: ['eu-police-two-a'],
@@ -269,10 +277,10 @@ export const SIREN_CONFIG = {
       { id: 'eu-police-stop', label: 'STOP', mode: 'stop', kind: 'horn', ...sx('eu', 'police') },
     ]),
     ambulance: cfg('europe', 'ambulance', [
-      { id: 'eu-ambu-two-tone', label: 'TWO-TONE', mode: 'toggle', kind: 'twoTone', ...sx('eu', 'ambulance') },
+      { id: 'eu-ambu-two-tone', label: 'TONE', mode: 'toggle', kind: 'twoTone', ...sx('eu', 'ambulance') },
       {
         id: 'eu-ambu-umh',
-        label: 'UMH',
+        label: 'ALT',
         mode: 'toggle',
         kind: 'twoToneUmh',
         exclusiveWith: ['eu-ambu-two-tone', 'eu-ambu-three-tone'],
@@ -280,7 +288,7 @@ export const SIREN_CONFIG = {
       },
       {
         id: 'eu-ambu-three-tone',
-        label: 'THREE-TONE',
+        label: 'TONE 2',
         mode: 'toggle',
         kind: 'threeTone',
         exclusiveWith: ['eu-ambu-two-tone', 'eu-ambu-umh', 'eu-ambu-wail', 'eu-ambu-yelp'],

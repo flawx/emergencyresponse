@@ -11,7 +11,7 @@ type SplitLabel = { line1: string; line2: string }
 
 type Props = {
   label: string
-  /** Libellé sur deux lignes (ex. Q-SIREN + ON/OFF), sans troncature. */
+  /** Libellé sur deux lignes (ex. MAN + HOLD), sans troncature. */
   splitLabel?: SplitLabel
   icon?: ReactNode
   active?: boolean
@@ -20,6 +20,8 @@ type Props = {
   disabled?: boolean
   /** Sélecteur de mode exclusif : actif mis en avant, inactifs atténués. */
   exclusiveSlot?: boolean
+  /** Légende sous le libellé (ex. Continuous / Fast). */
+  caption?: string
   title?: string
   onClick?: () => void
   onHoldStart?: (e: HoldEvent) => void
@@ -35,6 +37,7 @@ export function SirenButton({
   danger = false,
   disabled = false,
   exclusiveSlot = false,
+  caption,
   title,
   onClick,
   onHoldStart,
@@ -222,6 +225,9 @@ export function SirenButton({
           </span>
         ) : null}
       </div>
+      {caption ? (
+        <p className="pointer-events-none mt-1 text-center text-xs leading-snug text-slate-500">{caption}</p>
+      ) : null}
       {hold ? (
         <div
           className="pointer-events-none absolute bottom-0 left-0 right-0 h-[2px] overflow-hidden rounded-b-xl bg-slate-950/60"
