@@ -15,6 +15,17 @@ import {
   type SoundDefinition,
 } from '../utils/sirenConfig'
 import { loadStoredMasterVolume, saveStoredMasterVolume } from '../utils/masterVolumeStorage'
+import {
+  applyResponseCode,
+  bumpResponseCodeApplyGeneration,
+  getResponseCodeApplyGeneration,
+  scenarioKeyFromParams,
+  type ResponseCode,
+} from '../utils/responseCodes'
+import { saveStoredResponseCode } from '../utils/responseCodeStorage'
+
+/** Évite de repasser en MANUAL pendant `setResponseCode` → `setMainMode` / `toggleOverlay`. */
+let responseCodeApplyDepth = 0
 
 const AUDIO_ERR_LAYER_LIMIT =
   'Could not start sound — too many layers at once, or it is already playing.'
@@ -181,8 +192,10 @@ type SirenStore = {
 
   ensureReady: () => Promise<void>
   setMasterVolume: (value: number) => void
-  setMainMode: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<void>
-  toggleOverlay: (overlayId: SirenOverlayId, region?: string, emergency?: string) => Promise<void>
+  setMainMode: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<boolean>
+  toggleOverlay: (overlayId: SirenOverlayId, region?: string, emergency?: string) => Promise<boolean>
+  /** Coupe modes principaux + overlays sirène ; pas le micro / PTT / ducking ; pas les holds. */
+  clearMainAndOverlaysOnly: (region?: string, emergency?: string) => Promise<boolean>
   startManualHold: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<void>
   stopManualHold: () => void
   startHold: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<void>
@@ -193,6 +206,9 @@ type SirenStore = {
   /** Message court affiché en UI (échec play, incompatibilité couches). */
   audioError: string | null
   clearAudioError: () => void
+  /** Preset opérationnel (Code 1–3 / Manual) — surcouche UX, n’altère pas le moteur audio. */
+  responseCode: ResponseCode
+  setResponseCode: (code: ResponseCode, region?: string, emergency?: string) => Promise<void>
 }
 
 const applyLayerState = (
@@ -226,8 +242,69 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
   manualHoldSnapshot: null,
   active: {},
   audioError: null,
+  responseCode: 'manual',
 
   clearAudioError: () => set({ audioError: null }),
+
+  setResponseCode: async (code, region, emergency) => {
+    await get().ensureReady()
+    if (!region || !emergency) return
+    const key = scenarioKeyFromParams(region, emergency)
+    const gen = bumpResponseCodeApplyGeneration()
+
+    if (code === 'manual') {
+      set({ responseCode: 'manual' })
+      saveStoredResponseCode(key, 'manual')
+      return
+    }
+
+    set({ responseCode: code })
+    responseCodeApplyDepth += 1
+    try {
+      const result = await applyResponseCode(
+        code,
+        key,
+        { region, emergency },
+        {
+          clearMainAndOverlaysOnly: get().clearMainAndOverlaysOnly,
+          setMainMode: get().setMainMode,
+          toggleOverlay: get().toggleOverlay,
+        },
+        gen,
+      )
+      const stillCurrent = getResponseCodeApplyGeneration() === gen
+      if (!result.ok) {
+        if (get().responseCode === code && stillCurrent) {
+          set({ responseCode: 'manual' })
+          saveStoredResponseCode(key, 'manual')
+        }
+      } else if (get().responseCode === code && stillCurrent) {
+        saveStoredResponseCode(key, code)
+      }
+    } finally {
+      responseCodeApplyDepth = Math.max(0, responseCodeApplyDepth - 1)
+    }
+  },
+
+  clearMainAndOverlaysOnly: async (region, emergency) => {
+    await get().ensureReady()
+    if (!region || !emergency) return false
+    if (get().holdVoiceId || get().manualHoldSoundId) return false
+    const scenario = getScenario(region, emergency)
+    if (!scenario) return false
+    const { mainMode, overlays } = get()
+    if (mainMode) audioEngine.stop(mainMode)
+    if (overlays.qSiren) audioEngine.stop(Q_SIREN_SOUND_ID)
+    if (overlays.euAmbuWail) audioEngine.stop('eu-ambu-wail')
+    if (overlays.euAmbuYelp) audioEngine.stop('eu-ambu-yelp')
+    const nextOverlays = overlaysCompatibleWithMain(null, undefined, overlays)
+    applyLayerState(set, { mainMode: null, overlays: nextOverlays })
+    stopStaleScenarioToggles(
+      scenario,
+      buildActive(null, nextOverlays, get().holdVoiceId, get().manualHoldSoundId),
+    )
+    return true
+  },
 
   ensureReady: async () => {
     if (get().initialized) {
@@ -249,13 +326,14 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
   setMainMode: async (sound, region, emergency) => {
     await get().ensureReady()
-    if (get().holdVoiceId) return
-    if (get().manualHoldSoundId) return
-    if (sound.mode !== 'toggle') return
+    if (responseCodeApplyDepth === 0) set({ responseCode: 'manual' })
+    if (get().holdVoiceId) return false
+    if (get().manualHoldSoundId) return false
+    if (sound.mode !== 'toggle') return false
 
     const scenario = getScenario(region, emergency)
-    if (!scenario) return
-    if (!isMainModeToggle(sound, scenario)) return
+    if (!scenario) return false
+    if (!isMainModeToggle(sound, scenario)) return false
 
     const { mainMode, overlays } = get()
     const turningOff = mainMode === sound.id
@@ -273,7 +351,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
         scenario,
         buildActive(null, nextOverlays, get().holdVoiceId, get().manualHoldSoundId),
       )
-      return
+      return true
     }
 
     const nextMainId = sound.id
@@ -294,7 +372,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
     if (!canCombineMainWithOverlays(sound, nextOverlays)) {
       set({ audioError: AUDIO_ERR_LAYER_COMPAT })
-      return
+      return false
     }
 
     applyLayerState(set, {
@@ -309,15 +387,17 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
         overlays,
       })
       set({ audioError: AUDIO_ERR_LAYER_LIMIT })
-      return
+      return false
     }
 
     const active = buildActive(nextMainId, nextOverlays, get().holdVoiceId, get().manualHoldSoundId)
     stopStaleScenarioToggles(scenario, active)
+    return true
   },
 
   startManualHold: async (sound, region, emergency) => {
     await get().ensureReady()
+    if (responseCodeApplyDepth === 0) set({ responseCode: 'manual' })
     if (get().holdVoiceId) return
     if (get().manualHoldSoundId) return
 
@@ -367,18 +447,19 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
   toggleOverlay: async (overlayId, region, emergency) => {
     await get().ensureReady()
-    if (get().holdVoiceId) return
-    if (get().manualHoldSoundId) return
+    if (responseCodeApplyDepth === 0) set({ responseCode: 'manual' })
+    if (get().holdVoiceId) return false
+    if (get().manualHoldSoundId) return false
 
     const scenario = getScenario(region, emergency)
-    if (!scenario) return
+    if (!scenario) return false
 
     const { mainMode, overlays } = get()
 
     if (overlayId === 'qSiren') {
-      if (scenario.region !== 'america' || scenario.emergency !== 'fire') return
+      if (scenario.region !== 'america' || scenario.emergency !== 'fire') return false
       const def = getSoundDefinitionById(Q_SIREN_SOUND_ID)
-      if (!def) return
+      if (!def) return false
       const on = !!overlays.qSiren
       if (on) {
         audioEngine.stop(Q_SIREN_SOUND_ID)
@@ -386,12 +467,12 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       } else {
         if (!canAddOverlayToLayers(mainMode, overlays, def)) {
           set({ audioError: AUDIO_ERR_LAYER_COMPAT })
-          return
+          return false
         }
         const played = playLayerDef(def)
         if (!played) {
           set({ audioError: AUDIO_ERR_LAYER_LIMIT })
-          return
+          return false
         }
         applyLayerState(set, { overlays: { ...overlays, qSiren: true } })
       }
@@ -399,16 +480,16 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
         scenario,
         buildActive(mainMode, get().overlays, get().holdVoiceId, get().manualHoldSoundId),
       )
-      return
+      return true
     }
 
     if (overlayId === 'euAmbuWail' || overlayId === 'euAmbuYelp') {
-      if (scenario.region !== 'europe' || scenario.emergency !== 'ambulance') return
+      if (scenario.region !== 'europe' || scenario.emergency !== 'ambulance') return false
 
       const key = overlayId === 'euAmbuWail' ? 'euAmbuWail' : 'euAmbuYelp'
       const soundId = overlayId === 'euAmbuWail' ? 'eu-ambu-wail' : 'eu-ambu-yelp'
       const def = getSoundDefinitionById(soundId)
-      if (!def) return
+      if (!def) return false
 
       const currentlyOn = !!overlays[key]
       if (currentlyOn) {
@@ -419,12 +500,12 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
           scenario,
           buildActive(mainMode, next, get().holdVoiceId, get().manualHoldSoundId),
         )
-        return
+        return true
       }
 
       const baseOk =
         mainMode != null && (EU_AMBU_BASE_MAIN_IDS as readonly string[]).includes(mainMode)
-      if (!baseOk) return
+      if (!baseOk) return false
 
       const otherKey = overlayId === 'euAmbuWail' ? 'euAmbuYelp' : 'euAmbuWail'
       const otherId = overlayId === 'euAmbuWail' ? 'eu-ambu-yelp' : 'eu-ambu-wail'
@@ -436,24 +517,28 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
       if (!canAddOverlayToLayers(mainMode, next, def)) {
         set({ audioError: AUDIO_ERR_LAYER_COMPAT })
-        return
+        return false
       }
 
       const played = playLayerDef(def)
       if (!played) {
         set({ audioError: AUDIO_ERR_LAYER_LIMIT })
-        return
+        return false
       }
       applyLayerState(set, { overlays: next })
       stopStaleScenarioToggles(
         scenario,
         buildActive(mainMode, next, get().holdVoiceId, get().manualHoldSoundId),
       )
+      return true
     }
+
+    return false
   },
 
   startHold: async (sound, region, emergency) => {
     await get().ensureReady()
+    if (responseCodeApplyDepth === 0) set({ responseCode: 'manual' })
 
     const scenario = getScenario(region, emergency)
     if (!scenario) return

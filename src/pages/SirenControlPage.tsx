@@ -34,6 +34,8 @@ import {
 } from '../utils/sirenConfig'
 import { soundDefinitionIcon } from '../utils/sirenButtonIcons'
 import { loadStoredAudioInputDeviceId } from '../utils/audioInputDeviceStorage'
+import { loadStoredResponseCode } from '../utils/responseCodeStorage'
+import type { ResponseCode } from '../utils/responseCodes'
 
 type HoldEvent = PointerEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonElement>
 
@@ -48,6 +50,38 @@ const zonePaClass =
   'rounded-xl border border-slate-800/90 bg-[#120f0a] p-3 shadow-[inset_0_1px_0_rgba(251,146,60,0.05)]'
 const zoneControlClass =
   'rounded-xl border border-slate-800 bg-slate-900 p-3 shadow-[inset_0_2px_8px_rgba(0,0,0,0.35)]'
+const zoneResponseCodeClass =
+  'rounded-xl border border-slate-800/90 bg-[#070708] p-3 shadow-[inset_0_1px_0_rgba(255,59,59,0.06)]'
+
+function responseCodeLcdMain(code: ResponseCode): string {
+  switch (code) {
+    case 'code1':
+      return 'CODE 1'
+    case 'code2':
+      return 'CODE 2'
+    case 'code3':
+      return 'CODE 3'
+    case 'manual':
+      return 'MANUAL'
+    default:
+      return 'MANUAL'
+  }
+}
+
+function responseCodeLcdSubtitle(code: ResponseCode): string {
+  switch (code) {
+    case 'code1':
+      return 'ROUTINE'
+    case 'code2':
+      return 'URGENT RESPONSE'
+    case 'code3':
+      return 'EMERGENCY MODE'
+    case 'manual':
+      return 'MANUAL CONTROL'
+    default:
+      return ''
+  }
+}
 
 function isAudioDebugEnabled() {
   return (
@@ -81,11 +115,15 @@ export function SirenControlPage() {
   const audioError = useSirenStore((s) => s.audioError)
   const clearAudioError = useSirenStore((s) => s.clearAudioError)
   const active = useSirenStore((s) => s.active)
+  const responseCode = useSirenStore((s) => s.responseCode)
+  const setResponseCode = useSirenStore((s) => s.setResponseCode)
   const [, bumpHornUi] = useState(0)
   const [debugSnapshot, setDebugSnapshot] = useState(getAudioDebug())
   const qsirenHoldStartedAt = useRef<number | null>(null)
   const qsirenSuppressClick = useRef(false)
   const scenarioKeyRef = useRef<string | null>(null)
+  const responseCodeHydratedKeyRef = useRef<string | null>(null)
+  const [lcdFlash, setLcdFlash] = useState(false)
 
   useEffect(() => {
     if (!region || !emergency) return
@@ -95,6 +133,32 @@ export function SirenControlPage() {
     }
     scenarioKeyRef.current = key
   }, [region, emergency, stopAll])
+
+  useEffect(() => {
+    if (!region || !emergency || !scenario) return
+    const key = `${region}/${emergency}`
+    if (responseCodeHydratedKeyRef.current === key) return
+    responseCodeHydratedKeyRef.current = key
+    const stored = loadStoredResponseCode(key)
+    if (stored === 'code1' || stored === 'code2' || stored === 'code3') {
+      void setResponseCode(stored, region, emergency)
+    } else {
+      useSirenStore.setState({ responseCode: 'manual' })
+    }
+  }, [region, emergency, scenario, setResponseCode])
+
+  const prevResponseCodeRef = useRef<ResponseCode | null>(null)
+  useEffect(() => {
+    if (prevResponseCodeRef.current === null) {
+      prevResponseCodeRef.current = responseCode
+      return
+    }
+    if (prevResponseCodeRef.current === responseCode) return
+    prevResponseCodeRef.current = responseCode
+    setLcdFlash(true)
+    const t = window.setTimeout(() => setLcdFlash(false), 140)
+    return () => window.clearTimeout(t)
+  }, [responseCode])
 
   useEffect(() => {
     if (!audioError) return
@@ -441,6 +505,68 @@ export function SirenControlPage() {
       headerActions={<SettingsNavButton />}
     >
       <div className="space-y-6">
+        <section>
+          <h2 className={sectionTitleClass}>Response code</h2>
+          <p className="mb-2 text-[11px] text-slate-500">
+            Quick presets; manual siren buttons switch to MANUAL. Does not lock the panel.
+          </p>
+          <div className={zoneResponseCodeClass}>
+            <div
+              className={clsx(
+                'mb-3 rounded-lg border border-red-950/80 bg-black px-3 py-3 text-center transition-opacity duration-100',
+                lcdFlash ? 'opacity-[0.88]' : 'opacity-100',
+              )}
+              aria-live="polite"
+            >
+              <div className="font-mono text-[10px] font-medium uppercase tracking-[0.22em] text-red-500/75">
+                Response code
+              </div>
+              <div
+                className={clsx(
+                  'mt-1 font-mono text-[1.35rem] font-bold leading-tight tracking-[0.14em]',
+                  responseCode === 'manual'
+                    ? 'text-red-700 drop-shadow-[0_0_6px_rgba(185,28,28,0.35)]'
+                    : 'text-[#ff3b3b] drop-shadow-[0_0_12px_rgba(255,59,59,0.42)]',
+                )}
+              >
+                {responseCodeLcdMain(responseCode)}
+              </div>
+              <div className="mt-1 font-mono text-[10px] uppercase tracking-wider text-red-600/65">
+                {responseCodeLcdSubtitle(responseCode)}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {(
+                [
+                  { code: 'code1' as const, label: 'CODE 1' },
+                  { code: 'code2' as const, label: 'CODE 2' },
+                  { code: 'code3' as const, label: 'CODE 3' },
+                  { code: 'manual' as const, label: 'MANUAL' },
+                ] satisfies { code: ResponseCode; label: string }[]
+              ).map(({ code, label }) => (
+                <button
+                  key={code}
+                  type="button"
+                  disabled={!region || !emergency}
+                  onClick={() => {
+                    if (!region || !emergency) return
+                    vibrate(12)
+                    void setResponseCode(code, region, emergency)
+                  }}
+                  className={clsx(
+                    'min-h-12 rounded-lg border px-2 py-2.5 text-center text-xs font-bold uppercase tracking-wide transition-colors disabled:opacity-40',
+                    responseCode === code
+                      ? 'border-red-500/70 bg-red-950/50 text-red-100 shadow-[0_0_12px_rgba(239,68,68,0.2)]'
+                      : 'border-slate-700 bg-slate-900/90 text-slate-400 hover:border-slate-600 hover:text-slate-300',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+
         {audioError ? (
           <div
             role="alert"
