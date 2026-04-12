@@ -151,7 +151,7 @@ export function MasterLevelMeter({ leftDb, rightDb }: Props) {
     <div className="rounded-xl border border-slate-800 bg-panel-800 p-3" title={title}>
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-xs uppercase tracking-normal text-slate-500">Master level</div>
+          <div className="text-xs uppercase tracking-normal text-slate-500">Master Level</div>
           <div
             className={clsx(
               'text-[10px] font-bold',

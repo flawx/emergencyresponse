@@ -18,6 +18,8 @@ type Props = {
   hold?: boolean
   danger?: boolean
   disabled?: boolean
+  /** Sélecteur de mode exclusif : actif mis en avant, inactifs atténués. */
+  exclusiveSlot?: boolean
   title?: string
   onClick?: () => void
   onHoldStart?: (e: HoldEvent) => void
@@ -32,6 +34,7 @@ export function SirenButton({
   hold = false,
   danger = false,
   disabled = false,
+  exclusiveSlot = false,
   title,
   onClick,
   onHoldStart,
@@ -149,16 +152,26 @@ export function SirenButton({
           : 'min-h-16 py-2 text-left text-base md:min-h-14 md:py-1.5 md:text-sm',
         danger
           ? 'border-red-400 bg-red-600 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.25),0_0_10px_rgba(239,68,68,0.7)] ring-2 ring-red-400 hover:bg-red-500 disabled:hover:bg-red-600'
-          : [
-              'border-slate-700 bg-slate-900 text-slate-200 shadow-inner',
-              active
-                ? isHolding
-                  ? 'border-lime-400 bg-lime-500/25 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_8px_rgba(132,204,22,0.6)] ring-2 ring-lime-300'
-                  : 'border-lime-400 bg-lime-500/25 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_8px_rgba(132,204,22,0.6)] ring-2 ring-lime-400'
-                : isHolding
-                  ? 'border-lime-400/90 bg-lime-500/15 ring-2 ring-lime-300'
-                  : 'hover:border-slate-500 hover:bg-slate-900/95',
-            ],
+          : exclusiveSlot
+            ? [
+                active
+                  ? isHolding
+                    ? 'border-lime-300 bg-lime-400/35 text-white shadow-[inset_0_2px_6px_rgba(0,0,0,0.3),0_0_14px_rgba(132,204,22,0.55),0_0_28px_rgba(132,204,22,0.35)] ring-[3px] ring-lime-300/95'
+                    : 'border-lime-300 bg-lime-400/35 text-white shadow-[inset_0_2px_6px_rgba(0,0,0,0.28),0_0_18px_rgba(132,204,22,0.65),0_0_32px_rgba(132,204,22,0.4)] ring-4 ring-lime-300/90'
+                  : isHolding
+                    ? 'border-lime-400/70 bg-lime-500/10 text-slate-200 ring-2 ring-lime-400/50'
+                    : 'border-slate-800/95 bg-slate-950/70 text-slate-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] ring-1 ring-slate-800/80 hover:border-slate-600 hover:bg-slate-900/85 hover:text-slate-300',
+              ]
+            : [
+                'border-slate-700 bg-slate-900 text-slate-200 shadow-inner',
+                active
+                  ? isHolding
+                    ? 'border-lime-400 bg-lime-500/25 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_8px_rgba(132,204,22,0.6)] ring-2 ring-lime-300'
+                    : 'border-lime-400 bg-lime-500/25 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_8px_rgba(132,204,22,0.6)] ring-2 ring-lime-400'
+                  : isHolding
+                    ? 'border-lime-400/90 bg-lime-500/15 ring-2 ring-lime-300'
+                    : 'hover:border-slate-500 hover:bg-slate-900/95',
+              ],
         disabled && 'cursor-not-allowed border-slate-700 opacity-55 contrast-more:opacity-70',
         splitLabel && 'text-center',
       )}
@@ -180,7 +193,12 @@ export function SirenButton({
               {icon}
               <span className="flex flex-col items-center leading-tight whitespace-normal">
                 <span className="font-semibold">{splitLabel.line1}</span>
-                <span className={clsx('font-semibold', active ? 'text-white' : 'text-slate-300')}>
+                <span
+                  className={clsx(
+                    'font-semibold',
+                    active ? 'text-white' : exclusiveSlot ? 'text-slate-500' : 'text-slate-300',
+                  )}
+                >
                   {splitLabel.line2}
                 </span>
               </span>
@@ -222,8 +240,12 @@ export function SirenButton({
             'shadow-[0_0_8px_currentColor,0_0_16px_currentColor]',
             'before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-current before:opacity-30 before:blur-sm before:content-[""]',
             active
-              ? 'bg-lime-400 text-lime-300 motion-safe:animate-pulse'
-              : 'bg-slate-600 text-slate-500',
+              ? exclusiveSlot
+                ? 'bg-lime-300 text-lime-200 shadow-[0_0_10px_rgba(190,242,100,0.95),0_0_22px_rgba(132,204,22,0.75),0_0_36px_rgba(132,204,22,0.45)] motion-safe:animate-pulse'
+                : 'bg-lime-400 text-lime-300 motion-safe:animate-pulse'
+              : exclusiveSlot
+                ? 'bg-slate-700 text-slate-600 shadow-none'
+                : 'bg-slate-600 text-slate-500',
           )}
         />
       </span>

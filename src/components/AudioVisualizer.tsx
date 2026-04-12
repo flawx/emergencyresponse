@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { audioEngine } from '../audio/engine'
 
-/** Lissage visuel du domaine temporel (smoothingTimeConstant n’affecte pas getFloatTimeDomainData). */
+/** Visual smoothing in the time domain (`smoothingTimeConstant` does not affect `getFloatTimeDomainData`). */
 const WAVE_SMOOTH = 0.32
 
 export function AudioVisualizer() {
@@ -117,7 +117,7 @@ export function AudioVisualizer() {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
       <div className="flex flex-col gap-2">
-        <div className="text-xs uppercase tracking-normal text-slate-500">Audio scope</div>
+        <div className="text-xs uppercase tracking-normal text-slate-500">Spectrum</div>
         <div ref={containerRef} className="w-full">
           <canvas ref={canvasRef} className="block h-24 w-full rounded-md bg-slate-950/80" />
         </div>

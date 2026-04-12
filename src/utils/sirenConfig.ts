@@ -27,8 +27,112 @@ export type SoundDefinition = {
   kind: SoundKind
   regionStyle: RegionStyle
   variant: SoundVariant
+  /** Ids incompatibles sauf cas gérés par `canPlayTogether` / `canIgnoreExplicitExclusive`. */
   exclusiveWith?: string[]
   stopChirp?: boolean
+}
+
+/** Overlays persistants (Q-SIREN US, WAIL/YELP ambulance EU sur base two-tone/UMH). */
+export type SirenOverlayId = 'qSiren' | 'euAmbuWail' | 'euAmbuYelp'
+
+export const Q_SIREN_SOUND_ID = 'amer-fire-qsiren' as const
+
+export const EU_AMBU_BASE_MAIN_IDS = ['eu-ambu-two-tone', 'eu-ambu-umh'] as const
+
+/** Scénario routé (compatible avec les entrées de `SIREN_CONFIG`). */
+export type SirenScenario = {
+  region: Region
+  emergency: EmergencyType
+  defs: readonly SoundDefinition[]
+}
+
+const isWailOrYelp = (kind: SoundKind) => kind === 'wail' || kind === 'yelp'
+const isFrAmbuTone = (kind: SoundKind) =>
+  kind === 'twoTone' || kind === 'threeTone' || kind === 'twoToneUmh'
+const isEuAmbulance = (d: SoundDefinition) => d.regionStyle === 'eu' && d.variant === 'ambulance'
+
+/** Matrice de compatibilité (ex. WAIL+YELP ❌, WAIL+Q-SIREN ✔, EU two-tone+WAIL ✔, THREE-TONE+WAIL ❌). */
+export const canPlayTogether = (soundA: SoundDefinition, soundB: SoundDefinition) => {
+  if (soundA.id === soundB.id) return true
+  if (isWailOrYelp(soundA.kind) && isWailOrYelp(soundB.kind)) return false
+  if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
+  if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
+  if (isEuAmbulance(soundA) && isEuAmbulance(soundB)) {
+    const threeA = soundA.kind === 'threeTone'
+    const threeB = soundB.kind === 'threeTone'
+    const aWailYelp = isWailOrYelp(soundA.kind)
+    const bWailYelp = isWailOrYelp(soundB.kind)
+    if ((threeA && bWailYelp) || (threeB && aWailYelp)) return false
+    const aTone = isFrAmbuTone(soundA.kind)
+    const bTone = isFrAmbuTone(soundB.kind)
+    if ((aTone && bWailYelp) || (bTone && aWailYelp)) return true
+  }
+  return true
+}
+
+/** Lorsque `exclusiveWith` entre en conflit mais la superposition est volontaire (Q-SIREN, EU tone+wail/yelp). */
+export const canIgnoreExplicitExclusive = (soundA: SoundDefinition, soundB: SoundDefinition) => {
+  if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
+  if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
+  if (isEuAmbulance(soundA) && isEuAmbulance(soundB)) {
+    const threeA = soundA.kind === 'threeTone'
+    const threeB = soundB.kind === 'threeTone'
+    const aWailYelp = isWailOrYelp(soundA.kind)
+    const bWailYelp = isWailOrYelp(soundB.kind)
+    if ((threeA && bWailYelp) || (threeB && aWailYelp)) return false
+    const aTone = isFrAmbuTone(soundA.kind)
+    const bTone = isFrAmbuTone(soundB.kind)
+    if ((aTone && bWailYelp) || (bTone && aWailYelp)) return true
+  }
+  return false
+}
+
+export function getOverlayIdForSound(
+  sound: SoundDefinition,
+  scenario: SirenScenario,
+): SirenOverlayId | null {
+  if (scenario.region === 'america' && scenario.emergency === 'fire' && sound.kind === 'qsiren') {
+    return 'qSiren'
+  }
+  if (scenario.region === 'europe' && scenario.emergency === 'ambulance') {
+    if (sound.id === 'eu-ambu-wail') return 'euAmbuWail'
+    if (sound.id === 'eu-ambu-yelp') return 'euAmbuYelp'
+  }
+  return null
+}
+
+/** Sirène principale exclusive (toggles hors overlays Q-SIREN / EU WAIL-YELP). */
+export function isMainModeToggle(sound: SoundDefinition, scenario: SirenScenario): boolean {
+  return sound.mode === 'toggle' && getOverlayIdForSound(sound, scenario) == null
+}
+
+export function euAmbuHasBaseMain(mainMode: string | null): boolean {
+  return mainMode != null && (EU_AMBU_BASE_MAIN_IDS as readonly string[]).includes(mainMode)
+}
+
+/** Famille pour transition douce entre modes principaux (même orchestration, crossfade côté store). */
+export type MainModeSirenFamily = 'usModulated' | 'frTonal' | 'other'
+
+const US_MODULATED_KINDS: ReadonlySet<SoundKind> = new Set(['wail', 'yelp', 'phaser', 'hilo'])
+const FR_TONAL_KINDS: ReadonlySet<SoundKind> = new Set([
+  'twoTone',
+  'twoToneUmh',
+  'threeTone',
+  'twoToneA',
+  'twoToneM',
+])
+
+export function mainModeSirenFamily(def: SoundDefinition): MainModeSirenFamily {
+  if (def.regionStyle === 'us' && US_MODULATED_KINDS.has(def.kind)) return 'usModulated'
+  if (def.regionStyle === 'eu' && FR_TONAL_KINDS.has(def.kind)) return 'frTonal'
+  return 'other'
+}
+
+/** Même famille → crossfade court (ex. WAIL→YELP) ; sinon coupure plus nette (stop + play). */
+export function sameMainModeFamily(a: SoundDefinition, b: SoundDefinition): boolean {
+  const fa = mainModeSirenFamily(a)
+  const fb = mainModeSirenFamily(b)
+  return fa !== 'other' && fa === fb
 }
 
 const sx = (regionStyle: RegionStyle, variant: SoundVariant) => ({ regionStyle, variant })

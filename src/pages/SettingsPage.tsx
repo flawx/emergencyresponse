@@ -118,10 +118,10 @@ export function SettingsPage() {
       : 'Not reported by this browser'
 
   return (
-    <PanelLayout title="Settings" subtitle="Audio output and device info">
+    <PanelLayout title="Settings" subtitle="Audio Output and Device Info">
       <div className="space-y-8">
         <section>
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Audio output</h2>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Audio Output</h2>
           {!canSelectSink ? (
             <p className="text-sm text-slate-400">
               Audio output selection is not supported in this browser (e.g. Safari). Audio uses the default system
@@ -154,7 +154,7 @@ export function SettingsPage() {
                 </button>
               </div>
               <label htmlFor="audio-output-select" className="mb-1 block text-sm text-slate-400">
-                Output device
+                Device
               </label>
               <select
                 id="audio-output-select"

@@ -1,72 +1,132 @@
 import { create } from 'zustand'
 import { audioEngine } from '../audio/engine'
-import { getAllPlayableSoundIds, getScenario, type SoundDefinition } from '../utils/sirenConfig'
+import {
+  EU_AMBU_BASE_MAIN_IDS,
+  Q_SIREN_SOUND_ID,
+  getAllPlayableSoundIds,
+  getScenario,
+  getSoundDefinitionById,
+  isMainModeToggle,
+  sameMainModeFamily,
+  type SirenOverlayId,
+  type SirenScenario,
+  type SoundDefinition,
+} from '../utils/sirenConfig'
+
+/** Fade sortie voix précédente : même famille = chevauchement court avec la nouvelle (crossfade). */
+const MAIN_MODE_FADE_OUT_SAME_FAMILY_S = 0.038
+const MAIN_MODE_FADE_OUT_DIFF_FAMILY_S = 0.058
 
 type ActiveMap = Record<string, boolean>
 
-const isWailOrYelp = (kind: SoundDefinition['kind']) => kind === 'wail' || kind === 'yelp'
-const isFrAmbuTone = (kind: SoundDefinition['kind']) => kind === 'twoTone' || kind === 'threeTone' || kind === 'twoToneUmh'
-const isEuAmbulance = (d: SoundDefinition) => d.regionStyle === 'eu' && d.variant === 'ambulance'
+export type SirenOverlaysState = {
+  qSiren?: boolean
+  euAmbuWail?: boolean
+  euAmbuYelp?: boolean
+}
 
-const EU_AMBU_AUX_IDS = ['eu-ambu-two-tone', 'eu-ambu-umh'] as const
-const EU_AMBU_ORPHAN_WAIL_IDS = ['eu-ambu-wail', 'eu-ambu-yelp'] as const
+type LayerSnapshot = {
+  mainMode: string | null
+  overlays: SirenOverlaysState
+}
 
-/** Ambulance EU uniquement : coupe WAIL/YELP s’il n’y a ni TWO-TONE ni UMH actif. */
-function snapEuAmbulanceWailYelpIfOrphaned(active: ActiveMap) {
-  const hasAux = EU_AMBU_AUX_IDS.some((id) => active[id])
-  if (hasAux) return
-  for (const id of EU_AMBU_ORPHAN_WAIL_IDS) {
-    if (active[id]) {
-      audioEngine.stop(id)
-      active[id] = false
+const emptyOverlays = (): SirenOverlaysState => ({})
+
+const cloneOverlays = (o: SirenOverlaysState): SirenOverlaysState => ({ ...o })
+
+function buildActive(
+  mainMode: string | null,
+  overlays: SirenOverlaysState,
+  holdVoiceId: string | null,
+): ActiveMap {
+  const active: ActiveMap = {}
+  if (mainMode) active[mainMode] = true
+  if (overlays.qSiren) active[Q_SIREN_SOUND_ID] = true
+  if (overlays.euAmbuWail) active['eu-ambu-wail'] = true
+  if (overlays.euAmbuYelp) active['eu-ambu-yelp'] = true
+  if (holdVoiceId) active[holdVoiceId] = true
+  return active
+}
+
+function stopLayerVoices(snap: LayerSnapshot) {
+  if (snap.mainMode) audioEngine.stop(snap.mainMode)
+  if (snap.overlays.qSiren) audioEngine.stop(Q_SIREN_SOUND_ID)
+  if (snap.overlays.euAmbuWail) audioEngine.stop('eu-ambu-wail')
+  if (snap.overlays.euAmbuYelp) audioEngine.stop('eu-ambu-yelp')
+}
+
+function playLayerDef(def: SoundDefinition): boolean {
+  return audioEngine.play(def.id, {
+    kind: def.kind,
+    regionStyle: def.regionStyle,
+    variant: def.variant,
+  })
+}
+
+async function replaySnapshotLayers(snap: LayerSnapshot) {
+  if (snap.mainMode) {
+    const def = getSoundDefinitionById(snap.mainMode)
+    if (def) playLayerDef(def)
+  }
+  if (snap.overlays.qSiren) {
+    const def = getSoundDefinitionById(Q_SIREN_SOUND_ID)
+    if (def) playLayerDef(def)
+  }
+  if (snap.overlays.euAmbuWail) {
+    const def = getSoundDefinitionById('eu-ambu-wail')
+    if (def) playLayerDef(def)
+  }
+  if (snap.overlays.euAmbuYelp) {
+    const def = getSoundDefinitionById('eu-ambu-yelp')
+    if (def) playLayerDef(def)
+  }
+}
+
+function overlaysCompatibleWithMain(
+  mainMode: string | null,
+  mainDef: SoundDefinition | undefined,
+  overlays: SirenOverlaysState,
+): SirenOverlaysState {
+  const next = cloneOverlays(overlays)
+  const base = mainMode && (EU_AMBU_BASE_MAIN_IDS as readonly string[]).includes(mainMode)
+  if (!base) {
+    next.euAmbuWail = false
+    next.euAmbuYelp = false
+  }
+  if (mainDef?.kind === 'threeTone' && mainDef.variant === 'ambulance') {
+    next.euAmbuWail = false
+    next.euAmbuYelp = false
+  }
+  return next
+}
+
+function stopStaleScenarioToggles(scenario: SirenScenario, active: ActiveMap) {
+  for (const def of scenario.defs) {
+    if (def.mode === 'toggle' && !active[def.id]) {
+      audioEngine.stop(def.id)
     }
   }
 }
 
-const isEuAmbuWailOrYelp = (sound: SoundDefinition) =>
-  isEuAmbulance(sound) && (sound.id === 'eu-ambu-wail' || sound.id === 'eu-ambu-yelp')
-
-const canPlayTogether = (soundA: SoundDefinition, soundB: SoundDefinition) => {
-  if (soundA.id === soundB.id) return true
-  if (isWailOrYelp(soundA.kind) && isWailOrYelp(soundB.kind)) return false
-  if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
-  if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
-  if (isEuAmbulance(soundA) && isEuAmbulance(soundB)) {
-    const threeA = soundA.kind === 'threeTone'
-    const threeB = soundB.kind === 'threeTone'
-    const aWailYelp = isWailOrYelp(soundA.kind)
-    const bWailYelp = isWailOrYelp(soundB.kind)
-    if ((threeA && bWailYelp) || (threeB && aWailYelp)) return false
-    const aTone = isFrAmbuTone(soundA.kind)
-    const bTone = isFrAmbuTone(soundB.kind)
-    if ((aTone && bWailYelp) || (bTone && aWailYelp)) return true
-  }
-  return true
-}
-
-const canIgnoreExplicitExclusive = (soundA: SoundDefinition, soundB: SoundDefinition) => {
-  if (soundA.kind === 'qsiren' && isWailOrYelp(soundB.kind)) return true
-  if (soundB.kind === 'qsiren' && isWailOrYelp(soundA.kind)) return true
-  if (isEuAmbulance(soundA) && isEuAmbulance(soundB)) {
-    const threeA = soundA.kind === 'threeTone'
-    const threeB = soundB.kind === 'threeTone'
-    const aWailYelp = isWailOrYelp(soundA.kind)
-    const bWailYelp = isWailOrYelp(soundB.kind)
-    if ((threeA && bWailYelp) || (threeB && aWailYelp)) return false
-    const aTone = isFrAmbuTone(soundA.kind)
-    const bTone = isFrAmbuTone(soundB.kind)
-    if ((aTone && bWailYelp) || (bTone && aWailYelp)) return true
-  }
-  return false
+function isHoldOverrideSound(sound: SoundDefinition): boolean {
+  return sound.mode === 'hold' && sound.kind !== 'qsiren'
 }
 
 type SirenStore = {
   initialized: boolean
   masterVolume: number
+  mainMode: string | null
+  overlays: SirenOverlaysState
+  /** Horn / MAN (two-tone M) : voix de priorité pendant le maintien. */
+  holdVoiceId: string | null
+  holdLayersSnapshot: LayerSnapshot | null
+  /** Dérivé (compat + debug) : reflet de mainMode + overlays + hold. */
   active: ActiveMap
+
   ensureReady: () => Promise<void>
   setMasterVolume: (value: number) => void
-  toggleSound: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<void>
+  setMainMode: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<void>
+  toggleOverlay: (overlayId: SirenOverlayId, region?: string, emergency?: string) => Promise<void>
   startHold: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<void>
   endHold: (soundId: string) => void
   updateHoldPressure: (sound: SoundDefinition, pressure: number) => void
@@ -74,32 +134,33 @@ type SirenStore = {
   stopAll: (withChirp?: boolean) => void
 }
 
-const setSound = (active: ActiveMap, id: string, value: boolean) => {
-  active[id] = value
-}
-
-const stopIncompatibleActive = (
-  next: ActiveMap,
-  defsById: Record<string, SoundDefinition>,
-  incoming: SoundDefinition,
+const applyLayerState = (
+  set: (fn: (s: SirenStore) => Partial<SirenStore> | SirenStore) => void,
+  partial: Partial<Pick<SirenStore, 'mainMode' | 'overlays' | 'holdVoiceId' | 'holdLayersSnapshot'>>,
 ) => {
-  for (const [activeId, enabled] of Object.entries(next)) {
-    if (!enabled || activeId === incoming.id) continue
-    const activeDef = defsById[activeId]
-    if (!activeDef) continue
-    const explicitExclusive =
-      (incoming.exclusiveWith ?? []).includes(activeId) || (activeDef.exclusiveWith ?? []).includes(incoming.id)
-    const compatible = canPlayTogether(incoming, activeDef)
-    if (!compatible || (explicitExclusive && !canIgnoreExplicitExclusive(incoming, activeDef))) {
-      next[activeId] = false
-      audioEngine.stop(activeId)
+  set((s) => {
+    const mainMode = partial.mainMode !== undefined ? partial.mainMode : s.mainMode
+    const overlays = partial.overlays !== undefined ? partial.overlays : s.overlays
+    const holdVoiceId = partial.holdVoiceId !== undefined ? partial.holdVoiceId : s.holdVoiceId
+    const holdLayersSnapshot =
+      partial.holdLayersSnapshot !== undefined ? partial.holdLayersSnapshot : s.holdLayersSnapshot
+    return {
+      mainMode,
+      overlays,
+      holdVoiceId,
+      holdLayersSnapshot,
+      active: buildActive(mainMode, overlays, holdVoiceId),
     }
-  }
+  })
 }
 
 export const useSirenStore = create<SirenStore>((set, get) => ({
   initialized: false,
   masterVolume: 0.85,
+  mainMode: null,
+  overlays: emptyOverlays(),
+  holdVoiceId: null,
+  holdLayersSnapshot: null,
   active: {},
 
   ensureReady: async () => {
@@ -118,113 +179,193 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
     set({ masterVolume: value })
   },
 
-  toggleSound: async (sound, region, emergency) => {
+  setMainMode: async (sound, region, emergency) => {
     await get().ensureReady()
+    if (get().holdVoiceId) return
     if (sound.mode !== 'toggle') return
 
     const scenario = getScenario(region, emergency)
     if (!scenario) return
-    const defsById = Object.fromEntries(scenario.defs.map((def) => [def.id, def]))
+    if (!isMainModeToggle(sound, scenario)) return
 
-    const isActive = !!get().active[sound.id]
-    if (isActive) {
+    const { mainMode, overlays } = get()
+    const turningOff = mainMode === sound.id
+
+    if (turningOff) {
       audioEngine.stop(sound.id)
-      set((state) => {
-        const next = { ...state.active, [sound.id]: false }
-        const auxTurnedOff =
-          scenario.region === 'europe' &&
-          scenario.emergency === 'ambulance' &&
-          (sound.id === 'eu-ambu-two-tone' || sound.id === 'eu-ambu-umh')
-        if (auxTurnedOff) {
-          snapEuAmbulanceWailYelpIfOrphaned(next)
-        }
-        return { active: next }
+      const nextOverlays = overlaysCompatibleWithMain(null, undefined, overlays)
+      if (overlays.euAmbuWail && !nextOverlays.euAmbuWail) audioEngine.stop('eu-ambu-wail')
+      if (overlays.euAmbuYelp && !nextOverlays.euAmbuYelp) audioEngine.stop('eu-ambu-yelp')
+      applyLayerState(set, {
+        mainMode: null,
+        overlays: nextOverlays,
+      })
+      stopStaleScenarioToggles(scenario, buildActive(null, nextOverlays, get().holdVoiceId))
+      return
+    }
+
+    const nextMainId = sound.id
+    const prevMain = mainMode
+    if (prevMain && prevMain !== nextMainId) {
+      const prevDef = getSoundDefinitionById(prevMain)
+      const intraFamily = !!(prevDef && sameMainModeFamily(prevDef, sound))
+      audioEngine.stop(
+        prevMain,
+        intraFamily ? MAIN_MODE_FADE_OUT_SAME_FAMILY_S : MAIN_MODE_FADE_OUT_DIFF_FAMILY_S,
+      )
+    }
+
+    const mainDef = getSoundDefinitionById(nextMainId)
+    const nextOverlays = overlaysCompatibleWithMain(nextMainId, mainDef, overlays)
+    if (overlays.euAmbuWail && !nextOverlays.euAmbuWail) audioEngine.stop('eu-ambu-wail')
+    if (overlays.euAmbuYelp && !nextOverlays.euAmbuYelp) audioEngine.stop('eu-ambu-yelp')
+
+    applyLayerState(set, {
+      mainMode: nextMainId,
+      overlays: nextOverlays,
+    })
+
+    const played = playLayerDef(sound)
+    if (!played) {
+      applyLayerState(set, {
+        mainMode: prevMain ?? null,
+        overlays,
       })
       return
     }
 
-    const activeBefore = get().active
-    const isEuAmbu = scenario.region === 'europe' && scenario.emergency === 'ambulance'
-    const isEuAmbuWailYelp = isEuAmbuWailOrYelp(sound)
-    const hasAuxActive = !!(activeBefore['eu-ambu-two-tone'] || activeBefore['eu-ambu-umh'])
-    if (isEuAmbu && isEuAmbuWailYelp && !hasAuxActive) {
-      return
-    }
+    const active = buildActive(nextMainId, nextOverlays, get().holdVoiceId)
+    stopStaleScenarioToggles(scenario, active)
+  },
 
-    set((state) => {
-      const next = { ...state.active }
-      stopIncompatibleActive(next, defsById, sound)
-      setSound(next, sound.id, true)
-      return { active: next }
-    })
+  toggleOverlay: async (overlayId, region, emergency) => {
+    await get().ensureReady()
+    if (get().holdVoiceId) return
 
-    const played = audioEngine.play(sound.id, {
-      kind: sound.kind,
-      regionStyle: sound.regionStyle,
-      variant: sound.variant,
-    })
-    if (!played) {
-      set((state) => ({ active: { ...state.active, [sound.id]: false } }))
-      return
-    }
+    const scenario = getScenario(region, emergency)
+    if (!scenario) return
 
-    // Ensure dangling toggles from previous page are removed.
-    for (const def of scenario.defs) {
-      if (def.mode === 'toggle' && def.id !== sound.id && !get().active[def.id]) {
-        audioEngine.stop(def.id)
+    const { mainMode, overlays } = get()
+
+    if (overlayId === 'qSiren') {
+      if (scenario.region !== 'america' || scenario.emergency !== 'fire') return
+      const def = getSoundDefinitionById(Q_SIREN_SOUND_ID)
+      if (!def) return
+      const on = !!overlays.qSiren
+      if (on) {
+        audioEngine.stop(Q_SIREN_SOUND_ID)
+        applyLayerState(set, { overlays: { ...overlays, qSiren: false } })
+      } else {
+        const played = playLayerDef(def)
+        if (!played) return
+        applyLayerState(set, { overlays: { ...overlays, qSiren: true } })
       }
+      stopStaleScenarioToggles(scenario, buildActive(mainMode, get().overlays, get().holdVoiceId))
+      return
+    }
+
+    if (overlayId === 'euAmbuWail' || overlayId === 'euAmbuYelp') {
+      if (scenario.region !== 'europe' || scenario.emergency !== 'ambulance') return
+
+      const key = overlayId === 'euAmbuWail' ? 'euAmbuWail' : 'euAmbuYelp'
+      const soundId = overlayId === 'euAmbuWail' ? 'eu-ambu-wail' : 'eu-ambu-yelp'
+      const def = getSoundDefinitionById(soundId)
+      if (!def) return
+
+      const currentlyOn = !!overlays[key]
+      if (currentlyOn) {
+        audioEngine.stop(soundId)
+        const next = { ...overlays, [key]: false } as SirenOverlaysState
+        applyLayerState(set, { overlays: next })
+        stopStaleScenarioToggles(scenario, buildActive(mainMode, next, get().holdVoiceId))
+        return
+      }
+
+      const baseOk =
+        mainMode != null && (EU_AMBU_BASE_MAIN_IDS as readonly string[]).includes(mainMode)
+      if (!baseOk) return
+
+      const otherKey = overlayId === 'euAmbuWail' ? 'euAmbuYelp' : 'euAmbuWail'
+      const otherId = overlayId === 'euAmbuWail' ? 'eu-ambu-yelp' : 'eu-ambu-wail'
+      let next = { ...overlays, [key]: true as boolean }
+      if (overlays[otherKey]) {
+        audioEngine.stop(otherId)
+        next = { ...next, [otherKey]: false }
+      }
+
+      const played = playLayerDef(def)
+      if (!played) return
+      applyLayerState(set, { overlays: next })
+      stopStaleScenarioToggles(scenario, buildActive(mainMode, next, get().holdVoiceId))
     }
   },
 
   startHold: async (sound, region, emergency) => {
     await get().ensureReady()
-    if (sound.mode !== 'hold' && sound.kind !== 'qsiren') return
 
     const scenario = getScenario(region, emergency)
     if (!scenario) return
-    const defsById = Object.fromEntries(scenario.defs.map((def) => [def.id, def]))
 
     if (sound.kind === 'qsiren') {
-      if (!get().active[sound.id]) {
+      if (!get().overlays.qSiren) {
         const ok = audioEngine.play(sound.id, {
           kind: sound.kind,
           regionStyle: sound.regionStyle,
           variant: sound.variant,
         })
         if (ok) {
-          set((state) => ({ active: { ...state.active, [sound.id]: true } }))
+          applyLayerState(set, {
+            overlays: { ...get().overlays, qSiren: true },
+          })
         }
       }
       audioEngine.setQSirenBoost(sound.id, 1)
       return
     }
 
-    if (get().active[sound.id]) return
-    set((state) => {
-      const next = { ...state.active }
-      stopIncompatibleActive(next, defsById, sound)
-      setSound(next, sound.id, true)
-      return { active: next }
-    })
+    if (!isHoldOverrideSound(sound)) return
+
+    if (get().holdVoiceId) return
+
+    const snap: LayerSnapshot = {
+      mainMode: get().mainMode,
+      overlays: cloneOverlays(get().overlays),
+    }
+    stopLayerVoices(snap)
+
     const hornOk = audioEngine.play(sound.id, {
       kind: sound.kind,
       regionStyle: sound.regionStyle,
       variant: sound.variant,
     })
-    if (!hornOk) {
-      set((state) => ({ active: { ...state.active, [sound.id]: false } }))
-    }
+    if (!hornOk) return
+
+    applyLayerState(set, {
+      holdLayersSnapshot: snap,
+      holdVoiceId: sound.id,
+    })
+    stopStaleScenarioToggles(scenario, get().active)
   },
 
   endHold: (soundId) => {
-    const activeSound = get().active[soundId]
-    if (!activeSound) return
     if (soundId.includes('qsiren')) {
       audioEngine.setQSirenBoost(soundId, 0)
       return
     }
+
+    if (get().holdVoiceId !== soundId) return
+
     audioEngine.stop(soundId, 0.04)
-    set((state) => ({ active: { ...state.active, [soundId]: false } }))
+    const snap = get().holdLayersSnapshot
+
+    applyLayerState(set, {
+      holdVoiceId: null,
+      holdLayersSnapshot: null,
+    })
+
+    if (snap) {
+      void get().ensureReady().then(() => replaySnapshotLayers(snap))
+    }
   },
 
   updateHoldPressure: (sound, pressure) => {
@@ -237,6 +378,12 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
   stopAll: (withChirp = false) => {
     audioEngine.stopAll(withChirp)
-    set({ active: {} })
+    set({
+      mainMode: null,
+      overlays: emptyOverlays(),
+      holdVoiceId: null,
+      holdLayersSnapshot: null,
+      active: {},
+    })
   },
 }))

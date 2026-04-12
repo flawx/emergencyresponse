@@ -12,7 +12,12 @@ import { audioEngine } from '../audio/engine'
 import { useHaptic } from '../hooks/useHaptic'
 import { useSirenStore } from '../store/sirenStore'
 import type { SoundDefinition } from '../utils/sirenConfig'
-import { getScenario } from '../utils/sirenConfig'
+import {
+  euAmbuHasBaseMain,
+  getOverlayIdForSound,
+  getScenario,
+  isMainModeToggle,
+} from '../utils/sirenConfig'
 import { soundDefinitionIcon } from '../utils/sirenButtonIcons'
 
 type HoldEvent = PointerEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonElement>
@@ -20,9 +25,10 @@ type HoldEvent = PointerEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonEleme
 const sectionTitleClass = 'mb-2 text-xs uppercase tracking-normal text-slate-500'
 const sectionDividerClass = 'border-t border-slate-800 pt-4'
 
-/** Zones distinctes : interactions principales / bleu nuit / gris secondaire */
 const zoneSirensClass =
   'rounded-xl border border-slate-800 bg-panel-800 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+const zoneOverlaysClass =
+  'rounded-xl border border-slate-800/90 bg-panel-800/95 p-3 shadow-[inset_0_1px_0_rgba(163,230,53,0.04)]'
 const zoneHornsClass =
   'rounded-xl border border-slate-800/90 bg-[#0a1424] p-3 shadow-[inset_0_1px_0_rgba(56,189,248,0.06)]'
 const zoneControlClass =
@@ -41,9 +47,12 @@ export function SirenControlPage() {
   const scenario = getScenario(region, emergency)
   const { vibrate } = useHaptic()
 
-  const active = useSirenStore((s) => s.active)
+  const mainMode = useSirenStore((s) => s.mainMode)
+  const overlays = useSirenStore((s) => s.overlays)
+  const holdVoiceId = useSirenStore((s) => s.holdVoiceId)
   const masterVolume = useSirenStore((s) => s.masterVolume)
-  const toggleSound = useSirenStore((s) => s.toggleSound)
+  const setMainMode = useSirenStore((s) => s.setMainMode)
+  const toggleOverlay = useSirenStore((s) => s.toggleOverlay)
   const startHold = useSirenStore((s) => s.startHold)
   const endHold = useSirenStore((s) => s.endHold)
   const stopAll = useSirenStore((s) => s.stopAll)
@@ -74,8 +83,17 @@ export function SirenControlPage() {
 
   if (!scenario) return <Navigate to="/" replace />
 
-  const sirenDefs = scenario.defs.filter((d) => !(d.kind === 'horn' && d.mode === 'hold'))
+  const mainModeDefs = scenario.defs.filter(
+    (d) => d.mode === 'toggle' && isMainModeToggle(d, scenario),
+  )
+  const overlayDefs = scenario.defs.filter((d) => getOverlayIdForSound(d, scenario) !== null)
+  const qsirenDef = overlayDefs.find((d) => d.kind === 'qsiren')
+  const euAmbuOverlayDefs = overlayDefs.filter(
+    (d) => d.id === 'eu-ambu-wail' || d.id === 'eu-ambu-yelp',
+  )
+  const stopDef = scenario.defs.find((d) => d.mode === 'stop')
   const hornDefs = scenario.defs.filter((d) => d.kind === 'horn' && d.mode === 'hold')
+  const hasOverlaySection = overlayDefs.length > 0
 
   const onHoldStart = async (soundId: string, e: HoldEvent) => {
     const sound = scenario.defs.find((def) => def.id === soundId)
@@ -110,47 +128,97 @@ export function SirenControlPage() {
     endHold(soundId)
   }
 
-  const renderSoundRow = (sound: SoundDefinition) => {
-    const isActive = !!active[sound.id]
-    const isStop = sound.mode === 'stop'
-    if (sound.kind === 'qsiren') {
-      return (
-        <div key={sound.id} className="col-span-full grid grid-cols-2 gap-3">
-          <SirenButton
-            label="Q-SIREN ON/OFF"
-            splitLabel={{ line1: 'Q-SIREN', line2: 'ON/OFF' }}
-            icon={soundDefinitionIcon(sound)}
-            active={isActive}
-            onClick={() => {
-              if (qsirenSuppressClick.current) {
-                qsirenSuppressClick.current = false
-                return
-              }
-              vibrate()
-              void toggleSound(sound, region, emergency)
-            }}
-          />
-          <SirenButton
-            label="Q-SIREN HOLD"
-            splitLabel={{ line1: 'Q-SIREN', line2: 'HOLD' }}
-            icon={soundDefinitionIcon(sound)}
-            active={isActive}
-            hold
-            onHoldStart={(e: HoldEvent) => {
-              void onHoldStart(sound.id, e)
-            }}
-            onHoldEnd={() => onHoldEnd(sound.id)}
-          />
-        </div>
-      )
-    }
-    const euAmbuAuxOn = !!active['eu-ambu-two-tone'] || !!active['eu-ambu-umh']
-    const isEuAmbuWailYelpRow =
+  const renderMainModeButton = (sound: SoundDefinition) => (
+    <div key={sound.id} className="min-w-0">
+      <SirenButton
+        label={sound.label}
+        icon={soundDefinitionIcon(sound)}
+        active={mainMode === sound.id}
+        exclusiveSlot
+        onClick={() => {
+          vibrate()
+          void setMainMode(sound, region, emergency)
+        }}
+      />
+    </div>
+  )
+
+  const renderOverlayButton = (sound: SoundDefinition) => {
+    const overlayId = getOverlayIdForSound(sound, scenario)
+    if (!overlayId) return null
+    const isActive =
+      overlayId === 'qSiren'
+        ? !!overlays.qSiren
+        : overlayId === 'euAmbuWail'
+          ? !!overlays.euAmbuWail
+          : !!overlays.euAmbuYelp
+    const euAmbuAuxOn = euAmbuHasBaseMain(mainMode)
+    const isEuAmbuWailYelp =
       scenario.region === 'europe' &&
       scenario.emergency === 'ambulance' &&
       (sound.id === 'eu-ambu-wail' || sound.id === 'eu-ambu-yelp')
-    const euAmbuWailYelpBlocked = isEuAmbuWailYelpRow && !euAmbuAuxOn && !isActive
+    const euAmbuWailYelpBlocked = isEuAmbuWailYelp && !euAmbuAuxOn && !isActive
+    const euAmbuWailYelpNeedsBase =
+      isEuAmbuWailYelp && !euAmbuAuxOn ? 'Requires TWO-TONE or UMH' : undefined
 
+    return (
+      <div key={sound.id} className="min-w-0">
+        <SirenButton
+          label={sound.label}
+          icon={soundDefinitionIcon(sound)}
+          active={isActive}
+          disabled={euAmbuWailYelpBlocked}
+          title={euAmbuWailYelpBlocked ? euAmbuWailYelpNeedsBase : undefined}
+          onClick={() => {
+            if (euAmbuWailYelpBlocked) return
+            vibrate()
+            void toggleOverlay(overlayId, region, emergency)
+          }}
+        />
+        {euAmbuWailYelpBlocked ? (
+          <p className="mt-1 text-[11px] text-slate-500" role="status">
+            {euAmbuWailYelpNeedsBase}
+          </p>
+        ) : null}
+      </div>
+    )
+  }
+
+  const renderQsirenRow = (sound: SoundDefinition) => {
+    const isActive = !!overlays.qSiren
+    return (
+      <div className="col-span-full grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <SirenButton
+          label="Q-SIREN ON/OFF"
+          splitLabel={{ line1: 'Q-SIREN', line2: 'ON/OFF' }}
+          icon={soundDefinitionIcon(sound)}
+          active={isActive}
+          onClick={() => {
+            if (qsirenSuppressClick.current) {
+              qsirenSuppressClick.current = false
+              return
+            }
+            vibrate()
+            void toggleOverlay('qSiren', region, emergency)
+          }}
+        />
+        <SirenButton
+          label="Q-SIREN HOLD"
+          splitLabel={{ line1: 'Q-SIREN', line2: 'HOLD' }}
+          icon={soundDefinitionIcon(sound)}
+          active={isActive}
+          hold
+          onHoldStart={(e: HoldEvent) => {
+            void onHoldStart(sound.id, e)
+          }}
+          onHoldEnd={() => onHoldEnd(sound.id)}
+        />
+      </div>
+    )
+  }
+
+  const renderHornRow = (sound: SoundDefinition) => {
+    const isActive = holdVoiceId === sound.id
     const hornSampleMissing =
       (sound.id === 'amer-police-horn' && !hasPoliceHorn) ||
       (sound.id === 'amer-fire-airhorn' && !hasAirHorn)
@@ -167,39 +235,23 @@ export function SirenControlPage() {
           label={sound.label}
           icon={soundDefinitionIcon(sound)}
           active={isActive}
-          hold={sound.mode === 'hold'}
-          danger={isStop}
-          disabled={hornDisabled || euAmbuWailYelpBlocked}
-          title={euAmbuWailYelpBlocked ? 'Requires TWO-TONE or UMH' : hornTooltip}
-          onClick={() => {
-            if (hornDisabled || euAmbuWailYelpBlocked) return
-            if (sound.mode === 'toggle') {
-              vibrate()
-              void toggleSound(sound, region, emergency)
-            }
-            if (isStop) {
-              vibrate([18, 30, 18])
-              stopAll(sound.stopChirp)
-            }
-          }}
+          hold
+          disabled={hornDisabled}
+          title={hornTooltip}
           onHoldStart={
-            sound.mode === 'hold' && !hornDisabled
+            !hornDisabled
               ? (e: HoldEvent) => {
                   void onHoldStart(sound.id, e)
                 }
               : undefined
           }
-          onHoldEnd={sound.mode === 'hold' ? () => onHoldEnd(sound.id) : undefined}
+          onHoldEnd={() => onHoldEnd(sound.id)}
         />
         {hornDisabled ? (
           <div className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-amber-500">
             <AlertTriangle className="size-3 shrink-0 opacity-90" strokeWidth={2} aria-hidden />
             <span>Audio file required — see README</span>
           </div>
-        ) : euAmbuWailYelpBlocked ? (
-          <p className="mt-1 text-[11px] text-slate-500" role="status">
-            Requires TWO-TONE or UMH
-          </p>
         ) : null}
       </div>
     )
@@ -213,43 +265,85 @@ export function SirenControlPage() {
     >
       <div className="space-y-6">
         <section>
-          <h2 className={sectionTitleClass}>SIRENS</h2>
+          <h2 className={sectionTitleClass}>Main mode</h2>
+          <p className="mb-2 text-[11px] text-slate-500">
+            Select one mode. Tap again to stop.
+          </p>
           <div className={zoneSirensClass}>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {sirenDefs.map((sound) => renderSoundRow(sound))}
+            <div className="mode-selector grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {mainModeDefs.map((sound) => renderMainModeButton(sound))}
             </div>
+            {stopDef ? (
+              <div className="mt-3 border-t border-slate-800/90 pt-3">
+                <SirenButton
+                  label={stopDef.label}
+                  icon={soundDefinitionIcon(stopDef)}
+                  active={false}
+                  danger
+                  onClick={() => {
+                    vibrate([18, 30, 18])
+                    stopAll(stopDef.stopChirp)
+                  }}
+                />
+              </div>
+            ) : null}
           </div>
         </section>
 
+        {hasOverlaySection ? (
+          <section className={sectionDividerClass}>
+            <h2 className={sectionTitleClass}>Overlays</h2>
+            <p className="mb-2 text-[11px] text-slate-500">
+              Optional overlays on the main mode: Q-SIREN; EU ambulance WAIL/YELP when TWO-TONE or UMH is selected.
+            </p>
+            <div className={zoneOverlaysClass}>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {qsirenDef ? renderQsirenRow(qsirenDef) : null}
+                {euAmbuOverlayDefs.length > 0 ? (
+                  <div
+                    className={
+                      qsirenDef
+                        ? 'col-span-full grid grid-cols-2 gap-2 sm:grid-cols-2'
+                        : 'col-span-full grid grid-cols-2 gap-2'
+                    }
+                  >
+                    {euAmbuOverlayDefs.map((s) => renderOverlayButton(s))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </section>
+        ) : null}
+
         {hornDefs.length > 0 ? (
           <section className={sectionDividerClass}>
-            <h2 className={sectionTitleClass}>HORNS</h2>
+            <h2 className={sectionTitleClass}>Horn / manual</h2>
             <div className={zoneHornsClass}>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                {hornDefs.map((sound) => renderSoundRow(sound))}
+                {hornDefs.map((sound) => renderHornRow(sound))}
               </div>
             </div>
           </section>
         ) : null}
 
         <section className={sectionDividerClass}>
-          <h2 className={sectionTitleClass}>CONTROL</h2>
+          <h2 className={sectionTitleClass}>System</h2>
           <div className={zoneControlClass}>
             <div className="space-y-6">
-            <VolumeSlider value={masterVolume} onChange={setMasterVolume} />
-            <MasterLevelMeter
-              leftDb={debugSnapshot.masterPostLimiterDbFs}
-              rightDb={debugSnapshot.masterPostLimiterDbFs}
-            />
-            <AudioVisualizer />
-            {isDebug ? (
-              <AudioDebugPanel
-                voices={debugSnapshot.voices}
-                logs={debugSnapshot.logs}
-                masterPostLimiterRms={debugSnapshot.masterPostLimiterRms}
-                masterPostLimiterDbFs={debugSnapshot.masterPostLimiterDbFs}
+              <VolumeSlider value={masterVolume} onChange={setMasterVolume} />
+              <MasterLevelMeter
+                leftDb={debugSnapshot.masterPostLimiterDbFs}
+                rightDb={debugSnapshot.masterPostLimiterDbFs}
               />
-            ) : null}
+              <AudioVisualizer />
+              {isDebug ? (
+                <AudioDebugPanel
+                  voices={debugSnapshot.voices}
+                  logs={debugSnapshot.logs}
+                  masterPostLimiterRms={debugSnapshot.masterPostLimiterRms}
+                  masterPostLimiterDbFs={debugSnapshot.masterPostLimiterDbFs}
+                />
+              ) : null}
             </div>
           </div>
         </section>

@@ -20,7 +20,7 @@ export function VolumeSlider({ value, onChange }: Props) {
           htmlFor={id}
           className="block text-xs uppercase tracking-normal text-slate-500"
         >
-          Master volume
+          Master Volume
         </label>
         <div className="grid grid-cols-[1fr_auto] items-center gap-x-2 gap-y-1">
           <input

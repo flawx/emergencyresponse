@@ -479,6 +479,12 @@ class AudioEngine {
     instance.gainNode.gain.setValueAtTime(instance.gainNode.gain.value, now)
     instance.gainNode.gain.linearRampToValueAtTime(0, now + fadeOut)
 
+    // Libère le slot tout de suite pour permettre un `play()` qui se croise avec la fin de fade
+    // (crossfade orchestré côté store, sans dépasser MAX_SIMULTANEOUS_VOICES).
+    this.active.delete(id)
+    this.syncMasterEqToVoiceCount()
+    this.updateAllActiveVoiceTrimGains()
+
     window.setTimeout(() => {
       try {
         instance.sampleSource?.stop()
@@ -518,9 +524,6 @@ class AudioEngine {
       instance.stereoPanner?.disconnect()
       instance.voiceInput.disconnect()
       instance.gainNode.disconnect()
-      this.active.delete(id)
-      this.syncMasterEqToVoiceCount()
-      this.updateAllActiveVoiceTrimGains()
     }, (fadeOut + 0.04) * 1000)
   }
 
