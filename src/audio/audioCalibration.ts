@@ -7,19 +7,19 @@
  */
 export const AUDIO_CALIBRATION: Record<string, number> = {
   // America — fire
-  'amer-fire-qsiren': 0.98,
-  'amer-fire-wail': 0.92,
-  'amer-fire-yelp': 1.04,
+  'amer-fire-qsiren': 1.38,
+  'amer-fire-wail': 1.29,
+  'amer-fire-yelp': 1.46,
   'amer-fire-airhorn': 1.06,
   // America — police
-  'amer-police-wail': 0.92,
-  'amer-police-yelp': 1.04,
+  'amer-police-wail': 1.29,
+  'amer-police-yelp': 1.46,
   'amer-police-phaser': 0.93,
   'amer-police-horn': 0.88,
   // America — ambulance (HI-LO un peu relevé vs chaîne FR)
-  'amer-ambu-hilo': 1.3,
+  'amer-ambu-hilo': 2.08,
   'amer-ambu-wail': 1.0,
-  'amer-ambu-yelp': 1.04,
+  'amer-ambu-yelp': 1.46,
   // Europe — fire (two-tone)
   'eu-fire-two-a': 1.35,
   'eu-fire-two-m': 1.35,
