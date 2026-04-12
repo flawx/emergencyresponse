@@ -26,6 +26,14 @@ type Props = {
   onClick?: () => void
   onHoldStart?: (e: HoldEvent) => void
   onHoldEnd?: (e?: HoldEvent) => void
+  /**
+   * Long press (ms) → momentary play (store) ; court tap → onClick inchangé (ex. 180 ms).
+   * Ignoré si `hold` (corne / MAN moteur).
+   */
+  manualHoldArmMs?: number
+  onManualHoldArm?: () => void
+  onManualHoldRelease?: () => void
+  manualHoldActive?: boolean
 }
 
 export function SirenButton({
@@ -42,11 +50,31 @@ export function SirenButton({
   onClick,
   onHoldStart,
   onHoldEnd,
+  manualHoldArmMs,
+  onManualHoldArm,
+  onManualHoldRelease,
+  manualHoldActive = false,
 }: Props) {
   const descId = useId()
   const keyboardHoldRef = useRef(false)
   const [isHolding, setIsHolding] = useState(false)
   const [hintVisible, setHintVisible] = useState(false)
+  const manualTimerRef = useRef(0)
+  const manualHoldingRef = useRef(false)
+  const suppressClickAfterManualRef = useRef(false)
+  /** Doigt enfoncé sur un bouton « manual hold » (feedback immédiat, avant confirmation). */
+  const [isPressing, setIsPressing] = useState(false)
+  const manualPressActiveRef = useRef(false)
+  const [armBarFill, setArmBarFill] = useState(false)
+
+  const clearManualTimer = useCallback(() => {
+    if (manualTimerRef.current) {
+      window.clearTimeout(manualTimerRef.current)
+      manualTimerRef.current = 0
+    }
+  }, [])
+
+  useEffect(() => () => clearManualTimer(), [clearManualTimer])
 
   const dismissHoldHint = useCallback(() => {
     if (typeof window === 'undefined') return
@@ -126,13 +154,101 @@ export function SirenButton({
     onHoldEnd(e)
   }
 
+  const startManualArm = (e: PointerEvent<HTMLButtonElement>) => {
+    if (!manualHoldArmMs || !onManualHoldArm || disabled || danger || hold) return
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+    clearManualTimer()
+    manualPressActiveRef.current = true
+    setIsPressing(true)
+    setArmBarFill(false)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!manualPressActiveRef.current) return
+        setArmBarFill(true)
+      })
+    })
+    manualTimerRef.current = window.setTimeout(() => {
+      manualTimerRef.current = 0
+      manualHoldingRef.current = true
+      suppressClickAfterManualRef.current = true
+      onManualHoldArm()
+    }, manualHoldArmMs)
+  }
+
+  const endManualArm = (e?: PointerEvent<HTMLButtonElement>) => {
+    if (!manualHoldArmMs || hold) return
+    manualPressActiveRef.current = false
+    setIsPressing(false)
+    setArmBarFill(false)
+    clearManualTimer()
+    if (manualHoldingRef.current) {
+      manualHoldingRef.current = false
+      onManualHoldRelease?.()
+    }
+    if (e && e.currentTarget?.releasePointerCapture) {
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId)
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const onPointerDownCombined = (e: PointerEvent<HTMLButtonElement>) => {
+    if (disabled) return
+    if (hold && onHoldStart) handlePointerDown(e)
+    if (!hold) startManualArm(e)
+  }
+
+  const onPointerEndCombined = (e: PointerEvent<HTMLButtonElement>) => {
+    if (hold && onHoldEnd) handlePointerEnd(e)
+    if (!hold) endManualArm(e)
+  }
+
+  const handleButtonClick = () => {
+    if (manualHoldArmMs && suppressClickAfterManualRef.current) {
+      suppressClickAfterManualRef.current = false
+      return
+    }
+    onClick?.()
+  }
+
   const pulseHold = hold && isHolding && !disabled && !danger
+  const manualHoldVisual = manualHoldActive && !hold && !danger
+  const manualArmingSquash =
+    !!manualHoldArmMs && !!onManualHoldArm && !hold && !danger && isPressing && !manualHoldActive
 
   return (
     <motion.button
-      animate={pulseHold ? { scale: [1, 1.01, 1] } : { scale: 1 }}
-      transition={{ duration: 1.2, repeat: pulseHold ? Infinity : 0, ease: 'easeInOut' }}
-      whileTap={disabled || pulseHold ? undefined : { scale: 0.98 }}
+      animate={
+        pulseHold
+          ? { scale: [1, 1.01, 1] }
+          : manualHoldVisual
+            ? { scale: 1.02 }
+            : manualArmingSquash
+              ? { scale: 0.97 }
+              : { scale: 1 }
+      }
+      transition={
+        pulseHold
+          ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' }
+          : manualArmingSquash || manualHoldVisual
+            ? { duration: 0.12, ease: 'easeOut' }
+            : exclusiveSlot
+              ? { duration: 0.15, ease: 'easeOut' }
+              : { duration: 0.2, ease: 'easeOut' }
+      }
+      whileTap={
+        disabled || pulseHold || manualHoldVisual || manualArmingSquash
+          ? undefined
+          : { scale: 0.98 }
+      }
       type="button"
       disabled={disabled}
       title={holdHelpTitle}
@@ -140,42 +256,83 @@ export function SirenButton({
       aria-pressed={danger ? undefined : active}
       aria-describedby={title ? descId : undefined}
       data-active={active ? 'true' : 'false'}
-      onClick={onClick}
-      onPointerDown={disabled ? undefined : hold && onHoldStart ? handlePointerDown : undefined}
-      onPointerUp={disabled ? undefined : hold && onHoldEnd ? (e) => handlePointerEnd(e) : undefined}
-      onPointerCancel={disabled ? undefined : hold && onHoldEnd ? (e) => handlePointerEnd(e) : undefined}
-      onPointerLeave={disabled ? undefined : hold && onHoldEnd ? (e) => handlePointerEnd(e) : undefined}
+      onClick={handleButtonClick}
+      onPointerDown={
+        disabled
+          ? undefined
+          : hold && onHoldStart
+            ? onPointerDownCombined
+            : manualHoldArmMs && onManualHoldArm
+              ? onPointerDownCombined
+              : undefined
+      }
+      onPointerUp={
+        disabled
+          ? undefined
+          : hold && onHoldEnd
+            ? onPointerEndCombined
+            : manualHoldArmMs && onManualHoldArm
+              ? onPointerEndCombined
+              : undefined
+      }
+      onPointerCancel={
+        disabled
+          ? undefined
+          : hold && onHoldEnd
+            ? onPointerEndCombined
+            : manualHoldArmMs && onManualHoldArm
+              ? onPointerEndCombined
+              : undefined
+      }
+      onPointerLeave={
+        disabled
+          ? undefined
+          : hold && onHoldEnd
+            ? onPointerEndCombined
+            : manualHoldArmMs && onManualHoldArm
+              ? onPointerEndCombined
+              : undefined
+      }
       onKeyDown={handleKeyDown}
       onKeyUp={handleKeyUp}
       onBlur={handleBlur}
       className={clsx(
-        'relative w-full min-w-0 select-none rounded-xl border px-4 font-semibold tracking-normal transition active:scale-[0.98] disabled:active:scale-100',
+        'relative w-full min-w-0 select-none rounded-xl border px-4 font-semibold tracking-normal disabled:active:scale-100',
+        !(manualHoldArmMs && (isPressing || manualHoldActive)) && 'active:scale-[0.98]',
+        manualArmingSquash && 'brightness-110',
+        exclusiveSlot ? 'transition-all duration-150 ease-out' : 'transition',
         splitLabel
           ? 'min-h-[4.5rem] py-3 text-sm md:min-h-16'
-          : 'min-h-16 py-2 text-left text-base md:min-h-14 md:py-1.5 md:text-sm',
+          : exclusiveSlot
+            ? 'flex items-center justify-center py-0 text-sm'
+            : 'min-h-16 py-2 text-left text-base md:min-h-14 md:py-1.5 md:text-sm',
         danger
-          ? 'border-red-400 bg-red-600 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.25),0_0_10px_rgba(239,68,68,0.7)] ring-2 ring-red-400 hover:bg-red-500 disabled:hover:bg-red-600'
+          ? 'border-red-500 bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.7)] ring-2 ring-red-400 hover:bg-red-500 disabled:hover:bg-red-600'
           : exclusiveSlot
             ? [
-                active
-                  ? isHolding
-                    ? 'border-lime-300 bg-lime-400/35 text-white shadow-[inset_0_2px_6px_rgba(0,0,0,0.3),0_0_14px_rgba(132,204,22,0.55),0_0_28px_rgba(132,204,22,0.35)] ring-[3px] ring-lime-300/95'
-                    : 'border-lime-300 bg-lime-400/35 text-white shadow-[inset_0_2px_6px_rgba(0,0,0,0.28),0_0_18px_rgba(132,204,22,0.65),0_0_32px_rgba(132,204,22,0.4)] ring-4 ring-lime-300/90'
-                  : isHolding
-                    ? 'border-lime-400/70 bg-lime-500/10 text-slate-200 ring-2 ring-lime-400/50'
-                    : 'border-slate-800/95 bg-slate-950/70 text-slate-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] ring-1 ring-slate-800/80 hover:border-slate-600 hover:bg-slate-900/85 hover:text-slate-300',
+                'h-14 min-h-0 border transition-all duration-150 ease-out',
+                manualHoldVisual
+                  ? 'z-[1] border-lime-400/50 bg-lime-400/15 text-white opacity-100 shadow-[0_0_5px_rgba(132,204,22,0.3)] ring-2 ring-white/30'
+                  : active
+                    ? 'border-lime-400/50 bg-lime-400/15 text-white opacity-100 shadow-[0_0_5px_rgba(132,204,22,0.3)] ring-2 ring-lime-400/70'
+                    : 'border-slate-700 bg-slate-900 text-slate-500 opacity-50 shadow-none ring-0 ring-offset-0 hover:border-slate-600 hover:bg-slate-800/90 hover:opacity-[0.65] hover:text-slate-400',
               ]
             : [
                 'border-slate-700 bg-slate-900 text-slate-200 shadow-inner',
-                active
+                active || manualHoldVisual
                   ? isHolding
                     ? 'border-lime-400 bg-lime-500/25 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_8px_rgba(132,204,22,0.6)] ring-2 ring-lime-300'
-                    : 'border-lime-400 bg-lime-500/25 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_8px_rgba(132,204,22,0.6)] ring-2 ring-lime-400'
+                    : manualHoldVisual
+                      ? 'z-[1] border-lime-400 bg-lime-500/25 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_8px_rgba(132,204,22,0.6)] ring-2 ring-white/30'
+                      : 'border-lime-400 bg-lime-500/25 text-white shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_8px_rgba(132,204,22,0.6)] ring-2 ring-lime-400'
                   : isHolding
                     ? 'border-lime-400/90 bg-lime-500/15 ring-2 ring-lime-300'
                     : 'hover:border-slate-500 hover:bg-slate-900/95',
               ],
-        disabled && 'cursor-not-allowed border-slate-700 opacity-55 contrast-more:opacity-70',
+        disabled &&
+          (exclusiveSlot
+            ? 'cursor-not-allowed opacity-40 contrast-more:opacity-50'
+            : 'cursor-not-allowed border-slate-700 opacity-55 contrast-more:opacity-70'),
         splitLabel && 'text-center',
       )}
     >
@@ -184,10 +341,16 @@ export function SirenButton({
           {title}
         </span>
       ) : null}
-      <div className="flex items-center justify-between gap-3">
+      <div
+        className={clsx(
+          'flex items-center gap-3',
+          exclusiveSlot && !hold ? 'justify-center' : 'justify-between',
+        )}
+      >
         <div
           className={clsx(
-            'flex min-w-0 flex-1 flex-col gap-0.5',
+            'flex min-w-0 flex-col gap-0.5',
+            exclusiveSlot && !hold ? 'min-w-0' : 'flex-1',
             splitLabel && 'items-center justify-center text-center',
           )}
         >
@@ -199,7 +362,11 @@ export function SirenButton({
                 <span
                   className={clsx(
                     'font-semibold',
-                    active ? 'text-white' : exclusiveSlot ? 'text-slate-500' : 'text-slate-300',
+                    active || manualHoldVisual
+                      ? 'text-white'
+                      : exclusiveSlot
+                        ? 'text-slate-500'
+                        : 'text-slate-300',
                   )}
                 >
                   {splitLabel.line2}
@@ -226,7 +393,7 @@ export function SirenButton({
         ) : null}
       </div>
       {caption ? (
-        <p className="pointer-events-none mt-1 text-center text-xs leading-snug text-slate-500">{caption}</p>
+        <p className="pointer-events-none mt-1 text-center text-[10px] leading-snug text-slate-500">{caption}</p>
       ) : null}
       {hold ? (
         <div
@@ -239,19 +406,38 @@ export function SirenButton({
           />
         </div>
       ) : null}
+      {manualHoldArmMs && onManualHoldArm && !hold && isPressing && !manualHoldActive ? (
+        <div
+          className="pointer-events-none absolute bottom-0 left-0 right-0 z-[2] h-[2px] overflow-hidden rounded-b-xl bg-slate-950/50"
+          aria-hidden
+        >
+          <div
+            className="h-full bg-lime-400 ease-linear"
+            style={{
+              width: armBarFill ? '100%' : '0%',
+              transitionProperty: 'width',
+              transitionDuration: `${manualHoldArmMs}ms`,
+              transitionTimingFunction: 'linear',
+            }}
+          />
+        </div>
+      ) : null}
       <span className="pointer-events-none absolute right-3 top-3 size-2" aria-hidden>
         <span
           className={clsx(
-            'relative block size-2 rounded-full border border-slate-900/50',
-            'shadow-[0_0_8px_currentColor,0_0_16px_currentColor]',
-            'before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-current before:opacity-30 before:blur-sm before:content-[""]',
-            active
-              ? exclusiveSlot
-                ? 'bg-lime-300 text-lime-200 shadow-[0_0_10px_rgba(190,242,100,0.95),0_0_22px_rgba(132,204,22,0.75),0_0_36px_rgba(132,204,22,0.45)] motion-safe:animate-pulse'
-                : 'bg-lime-400 text-lime-300 motion-safe:animate-pulse'
-              : exclusiveSlot
-                ? 'bg-slate-700 text-slate-600 shadow-none'
-                : 'bg-slate-600 text-slate-500',
+            'relative block size-2 rounded-full',
+            exclusiveSlot && !active && !manualHoldVisual
+              ? 'border border-slate-700 bg-slate-600 text-slate-600'
+              : [
+                  'border border-slate-900/50',
+                  'shadow-[0_0_8px_currentColor,0_0_16px_currentColor]',
+                  'before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-current before:opacity-30 before:blur-sm before:content-[""]',
+                  active || manualHoldVisual
+                    ? exclusiveSlot
+                      ? 'bg-lime-300 text-lime-200 shadow-[0_0_5px_rgba(132,204,22,0.55)] motion-safe:animate-pulse'
+                      : 'bg-lime-400 text-lime-300 motion-safe:animate-pulse'
+                    : 'bg-slate-600 text-slate-500',
+                ],
           )}
         />
       </span>

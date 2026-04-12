@@ -110,6 +110,26 @@ export function euAmbuHasBaseMain(mainMode: string | null): boolean {
   return mainMode != null && (EU_AMBU_BASE_MAIN_IDS as readonly string[]).includes(mainMode)
 }
 
+/** WAIL / YELP / two-tone (FR) : hold-to-play possible (UI + store), sans toucher au moteur audio. */
+export function isManualHoldCapable(
+  sound: SoundDefinition,
+  scenario: SirenScenario,
+  mainMode: string | null,
+): boolean {
+  const id = sound.id
+  const wailOrYelp = id.includes('wail') || id.includes('yelp')
+  const frToneToggle =
+    id.includes('two-tone') ||
+    (sound.regionStyle === 'eu' && sound.kind === 'twoToneA' && sound.mode === 'toggle')
+  if (!wailOrYelp && !frToneToggle) return false
+
+  const ov = getOverlayIdForSound(sound, scenario)
+  if (ov === 'euAmbuWail' || ov === 'euAmbuYelp') {
+    return euAmbuHasBaseMain(mainMode)
+  }
+  return isMainModeToggle(sound, scenario)
+}
+
 /** Famille pour transition douce entre modes principaux (même orchestration, crossfade côté store). */
 export type MainModeSirenFamily = 'usModulated' | 'frTonal' | 'other'
 

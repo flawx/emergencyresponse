@@ -38,6 +38,7 @@ function buildActive(
   mainMode: string | null,
   overlays: SirenOverlaysState,
   holdVoiceId: string | null,
+  manualHoldSoundId: string | null = null,
 ): ActiveMap {
   const active: ActiveMap = {}
   if (mainMode) active[mainMode] = true
@@ -45,6 +46,7 @@ function buildActive(
   if (overlays.euAmbuWail) active['eu-ambu-wail'] = true
   if (overlays.euAmbuYelp) active['eu-ambu-yelp'] = true
   if (holdVoiceId) active[holdVoiceId] = true
+  if (manualHoldSoundId) active[manualHoldSoundId] = true
   return active
 }
 
@@ -120,6 +122,9 @@ type SirenStore = {
   /** Horn / MAN (two-tone M) : voix de priorité pendant le maintien. */
   holdVoiceId: string | null
   holdLayersSnapshot: LayerSnapshot | null
+  /** Hold-to-play temporaire (WAIL/YELP/two-tone) ; restaure les couches au relâchement. */
+  manualHoldSoundId: string | null
+  manualHoldSnapshot: LayerSnapshot | null
   /** Dérivé (compat + debug) : reflet de mainMode + overlays + hold. */
   active: ActiveMap
 
@@ -127,6 +132,8 @@ type SirenStore = {
   setMasterVolume: (value: number) => void
   setMainMode: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<void>
   toggleOverlay: (overlayId: SirenOverlayId, region?: string, emergency?: string) => Promise<void>
+  startManualHold: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<void>
+  stopManualHold: () => void
   startHold: (sound: SoundDefinition, region?: string, emergency?: string) => Promise<void>
   endHold: (soundId: string) => void
   updateHoldPressure: (sound: SoundDefinition, pressure: number) => void
@@ -149,7 +156,7 @@ const applyLayerState = (
       overlays,
       holdVoiceId,
       holdLayersSnapshot,
-      active: buildActive(mainMode, overlays, holdVoiceId),
+      active: buildActive(mainMode, overlays, holdVoiceId, s.manualHoldSoundId),
     }
   })
 }
@@ -161,6 +168,8 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
   overlays: emptyOverlays(),
   holdVoiceId: null,
   holdLayersSnapshot: null,
+  manualHoldSoundId: null,
+  manualHoldSnapshot: null,
   active: {},
 
   ensureReady: async () => {
@@ -182,6 +191,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
   setMainMode: async (sound, region, emergency) => {
     await get().ensureReady()
     if (get().holdVoiceId) return
+    if (get().manualHoldSoundId) return
     if (sound.mode !== 'toggle') return
 
     const scenario = getScenario(region, emergency)
@@ -200,7 +210,10 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
         mainMode: null,
         overlays: nextOverlays,
       })
-      stopStaleScenarioToggles(scenario, buildActive(null, nextOverlays, get().holdVoiceId))
+      stopStaleScenarioToggles(
+        scenario,
+        buildActive(null, nextOverlays, get().holdVoiceId, get().manualHoldSoundId),
+      )
       return
     }
 
@@ -234,13 +247,62 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       return
     }
 
-    const active = buildActive(nextMainId, nextOverlays, get().holdVoiceId)
+    const active = buildActive(nextMainId, nextOverlays, get().holdVoiceId, get().manualHoldSoundId)
     stopStaleScenarioToggles(scenario, active)
+  },
+
+  startManualHold: async (sound, region, emergency) => {
+    await get().ensureReady()
+    if (get().holdVoiceId) return
+    if (get().manualHoldSoundId) return
+
+    const scenario = getScenario(region, emergency)
+    if (!scenario || !scenario.defs.some((d) => d.id === sound.id)) return
+
+    if (sound.id === 'eu-ambu-wail' || sound.id === 'eu-ambu-yelp') {
+      const m = get().mainMode
+      if (!m || !(EU_AMBU_BASE_MAIN_IDS as readonly string[]).includes(m)) return
+    }
+
+    const snap: LayerSnapshot = {
+      mainMode: get().mainMode,
+      overlays: cloneOverlays(get().overlays),
+    }
+    stopLayerVoices(snap)
+
+    const played = playLayerDef(sound)
+    if (!played) {
+      void replaySnapshotLayers(snap)
+      return
+    }
+
+    set((s) => ({
+      manualHoldSoundId: sound.id,
+      manualHoldSnapshot: snap,
+      active: buildActive(s.mainMode, s.overlays, s.holdVoiceId, sound.id),
+    }))
+    stopStaleScenarioToggles(scenario, get().active)
+  },
+
+  stopManualHold: () => {
+    const id = get().manualHoldSoundId
+    const snap = get().manualHoldSnapshot
+    if (!id) return
+    audioEngine.stop(id, 0.04)
+    set((s) => ({
+      manualHoldSoundId: null,
+      manualHoldSnapshot: null,
+      active: buildActive(s.mainMode, s.overlays, s.holdVoiceId, null),
+    }))
+    if (snap) {
+      void get().ensureReady().then(() => replaySnapshotLayers(snap))
+    }
   },
 
   toggleOverlay: async (overlayId, region, emergency) => {
     await get().ensureReady()
     if (get().holdVoiceId) return
+    if (get().manualHoldSoundId) return
 
     const scenario = getScenario(region, emergency)
     if (!scenario) return
@@ -260,7 +322,10 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
         if (!played) return
         applyLayerState(set, { overlays: { ...overlays, qSiren: true } })
       }
-      stopStaleScenarioToggles(scenario, buildActive(mainMode, get().overlays, get().holdVoiceId))
+      stopStaleScenarioToggles(
+        scenario,
+        buildActive(mainMode, get().overlays, get().holdVoiceId, get().manualHoldSoundId),
+      )
       return
     }
 
@@ -277,7 +342,10 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
         audioEngine.stop(soundId)
         const next = { ...overlays, [key]: false } as SirenOverlaysState
         applyLayerState(set, { overlays: next })
-        stopStaleScenarioToggles(scenario, buildActive(mainMode, next, get().holdVoiceId))
+        stopStaleScenarioToggles(
+          scenario,
+          buildActive(mainMode, next, get().holdVoiceId, get().manualHoldSoundId),
+        )
         return
       }
 
@@ -296,7 +364,10 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       const played = playLayerDef(def)
       if (!played) return
       applyLayerState(set, { overlays: next })
-      stopStaleScenarioToggles(scenario, buildActive(mainMode, next, get().holdVoiceId))
+      stopStaleScenarioToggles(
+        scenario,
+        buildActive(mainMode, next, get().holdVoiceId, get().manualHoldSoundId),
+      )
     }
   },
 
@@ -305,6 +376,10 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
     const scenario = getScenario(region, emergency)
     if (!scenario) return
+
+    if (get().manualHoldSoundId) {
+      get().stopManualHold()
+    }
 
     if (sound.kind === 'qsiren') {
       if (!get().overlays.qSiren) {
@@ -383,6 +458,8 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       overlays: emptyOverlays(),
       holdVoiceId: null,
       holdLayersSnapshot: null,
+      manualHoldSoundId: null,
+      manualHoldSnapshot: null,
       active: {},
     })
   },

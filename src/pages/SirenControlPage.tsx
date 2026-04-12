@@ -1,5 +1,15 @@
+import clsx from 'clsx'
 import { AlertTriangle } from 'lucide-react'
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+} from 'react'
 import { Navigate, useParams } from 'react-router-dom'
 import { MasterLevelMeter } from '../components/audio/MasterLevelMeter'
 import { AudioDebugPanel } from '../components/AudioDebugPanel'
@@ -18,6 +28,7 @@ import {
   getOverlayIdForSound,
   getScenario,
   isMainModeToggle,
+  isManualHoldCapable,
 } from '../utils/sirenConfig'
 import { soundDefinitionIcon } from '../utils/sirenButtonIcons'
 
@@ -26,8 +37,6 @@ type HoldEvent = PointerEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonEleme
 const sectionTitleClass = 'mb-2 text-xs uppercase tracking-normal text-slate-500'
 const sectionDividerClass = 'border-t border-slate-800 pt-4'
 
-const zoneSirensClass =
-  'rounded-xl border border-slate-800 bg-panel-800 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
 const zoneOverlaysClass =
   'rounded-xl border border-slate-800/90 bg-panel-800/95 p-3 shadow-[inset_0_1px_0_rgba(163,230,53,0.04)]'
 const zoneHornsClass =
@@ -57,6 +66,9 @@ export function SirenControlPage() {
   const startHold = useSirenStore((s) => s.startHold)
   const endHold = useSirenStore((s) => s.endHold)
   const stopAll = useSirenStore((s) => s.stopAll)
+  const manualHoldSoundId = useSirenStore((s) => s.manualHoldSoundId)
+  const startManualHold = useSirenStore((s) => s.startManualHold)
+  const stopManualHold = useSirenStore((s) => s.stopManualHold)
   const setMasterVolume = useSirenStore((s) => s.setMasterVolume)
   const updateHoldPressure = useSirenStore((s) => s.updateHoldPressure)
   const getAudioDebug = useSirenStore((s) => s.getAudioDebug)
@@ -82,11 +94,57 @@ export function SirenControlPage() {
   const hasPoliceHorn = audioEngine.hasPoliceHorn()
   const hasAirHorn = audioEngine.hasAirHorn()
 
-  if (!scenario) return <Navigate to="/" replace />
+  const mainModeDefs = useMemo((): SoundDefinition[] => {
+    if (!scenario) return []
+    return scenario.defs.filter((d) => d.mode === 'toggle' && isMainModeToggle(d, scenario))
+  }, [scenario])
 
-  const mainModeDefs = scenario.defs.filter(
-    (d) => d.mode === 'toggle' && isMainModeToggle(d, scenario),
-  )
+  const modeGridRef = useRef<HTMLDivElement>(null)
+  const modeCellRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const [modeHighlight, setModeHighlight] = useState({ x: 0, y: 0, w: 0, h: 0 })
+
+  /** Priorité visuelle : override manuel > mode latché (grille principale uniquement). */
+  const modeHighlightTarget = manualHoldSoundId ?? mainMode
+
+  const updateModeHighlight = useCallback(() => {
+    const grid = modeGridRef.current
+    if (!grid) return
+    if (!modeHighlightTarget) {
+      setModeHighlight((prev) => ({ ...prev, w: 0, h: 0 }))
+      return
+    }
+    const cell = modeCellRefs.current.get(modeHighlightTarget)
+    if (!cell) {
+      setModeHighlight((prev) => ({ ...prev, w: 0, h: 0 }))
+      return
+    }
+    const gr = grid.getBoundingClientRect()
+    const cr = cell.getBoundingClientRect()
+    setModeHighlight({
+      x: cr.left - gr.left,
+      y: cr.top - gr.top,
+      w: cr.width,
+      h: cr.height,
+    })
+  }, [modeHighlightTarget])
+
+  useLayoutEffect(() => {
+    updateModeHighlight()
+  }, [updateModeHighlight, mainModeDefs, modeHighlightTarget])
+
+  useEffect(() => {
+    const grid = modeGridRef.current
+    if (!grid) return undefined
+    const ro = new ResizeObserver(() => updateModeHighlight())
+    ro.observe(grid)
+    window.addEventListener('resize', updateModeHighlight)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', updateModeHighlight)
+    }
+  }, [updateModeHighlight])
+
+  if (!scenario) return <Navigate to="/" replace />
   const overlayDefs = scenario.defs.filter((d) => getOverlayIdForSound(d, scenario) !== null)
   const qsirenDef = overlayDefs.find((d) => d.kind === 'qsiren')
   const euAmbuOverlayDefs = overlayDefs.filter(
@@ -129,21 +187,50 @@ export function SirenControlPage() {
     endHold(soundId)
   }
 
-  const renderMainModeButton = (sound: SoundDefinition) => (
-    <div key={sound.id} className="min-w-0">
-      <SirenButton
-        label={sound.label}
-        caption={getMainModeCaption(sound)}
-        icon={soundDefinitionIcon(sound)}
-        active={mainMode === sound.id}
-        exclusiveSlot
-        onClick={() => {
-          vibrate()
-          void setMainMode(sound, region, emergency)
-        }}
-      />
-    </div>
-  )
+  const renderMainModeButton = (sound: SoundDefinition) => {
+    const cap = getMainModeCaption(sound)
+    const manualCapable = isManualHoldCapable(sound, scenario, mainMode)
+    const manualOverrideUi = manualHoldSoundId != null
+    const dimModeSelector =
+      manualOverrideUi && manualHoldSoundId !== sound.id
+    const modeActiveVisual =
+      manualOverrideUi ? manualHoldSoundId === sound.id : mainMode === sound.id
+    return (
+      <div
+        key={sound.id}
+        className={clsx(
+          'relative z-10 flex min-w-0 flex-col transition-opacity duration-150',
+          dimModeSelector && 'opacity-40',
+        )}
+      >
+        <div
+          ref={(el) => {
+            if (el) modeCellRefs.current.set(sound.id, el)
+            else modeCellRefs.current.delete(sound.id)
+          }}
+          className="w-full min-w-0"
+        >
+          <SirenButton
+            label={sound.label}
+            icon={soundDefinitionIcon(sound)}
+            active={modeActiveVisual}
+            exclusiveSlot
+            manualHoldArmMs={manualCapable ? 180 : undefined}
+            onManualHoldArm={() => void startManualHold(sound, region, emergency)}
+            onManualHoldRelease={() => stopManualHold()}
+            manualHoldActive={manualHoldSoundId === sound.id}
+            onClick={() => {
+              vibrate()
+              void setMainMode(sound, region, emergency)
+            }}
+          />
+        </div>
+        {cap ? (
+          <p className="mt-1 text-center text-[10px] leading-tight text-slate-500">{cap}</p>
+        ) : null}
+      </div>
+    )
+  }
 
   const renderOverlayButton = (sound: SoundDefinition) => {
     const overlayId = getOverlayIdForSound(sound, scenario)
@@ -162,15 +249,20 @@ export function SirenControlPage() {
     const euAmbuWailYelpBlocked = isEuAmbuWailYelp && !euAmbuAuxOn && !isActive
     const euAmbuWailYelpNeedsBase =
       isEuAmbuWailYelp && !euAmbuAuxOn ? 'Requires TONE or ALT' : undefined
+    const manualCapable = isManualHoldCapable(sound, scenario, mainMode)
 
     return (
       <div key={sound.id} className="min-w-0">
         <SirenButton
           label={sound.label}
           icon={soundDefinitionIcon(sound)}
-          active={isActive}
+          active={isActive || manualHoldSoundId === sound.id}
           disabled={euAmbuWailYelpBlocked}
           title={euAmbuWailYelpBlocked ? euAmbuWailYelpNeedsBase : undefined}
+          manualHoldArmMs={manualCapable && !euAmbuWailYelpBlocked ? 180 : undefined}
+          onManualHoldArm={() => void startManualHold(sound, region, emergency)}
+          onManualHoldRelease={() => stopManualHold()}
+          manualHoldActive={manualHoldSoundId === sound.id}
           onClick={() => {
             if (euAmbuWailYelpBlocked) return
             vibrate()
@@ -268,25 +360,47 @@ export function SirenControlPage() {
         <section>
           <h2 className={sectionTitleClass}>Siren</h2>
           <p className="mb-2 text-[11px] text-slate-500">Select a siren mode</p>
-          <div className={zoneSirensClass}>
-            <div className="mode-selector grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {manualHoldSoundId != null ? (
+            <div className="mb-2 text-[10px] text-white/40 uppercase tracking-wider transition-opacity duration-150">
+              Manual override
+            </div>
+          ) : null}
+          <div className="mode-selector relative rounded-xl border border-slate-700 bg-slate-950 p-3 shadow-inner">
+            <div
+              ref={modeGridRef}
+              className="mode-grid relative grid grid-cols-2 gap-2 sm:grid-cols-3"
+            >
+              <div
+                aria-hidden
+                className={clsx(
+                  'mode-highlight pointer-events-none absolute left-0 top-0 z-0 rounded-lg will-change-transform transition-colors duration-150',
+                  manualHoldSoundId != null ? 'bg-white/10' : 'bg-lime-400/20',
+                )}
+                style={{
+                  transform: `translate3d(${modeHighlight.x}px, ${modeHighlight.y}px, 0)`,
+                  width: modeHighlight.w,
+                  height: modeHighlight.h,
+                  transition:
+                    'transform 150ms ease-out, width 150ms ease-out, height 150ms ease-out, background-color 150ms ease-out',
+                }}
+              />
               {mainModeDefs.map((sound) => renderMainModeButton(sound))}
             </div>
-            {stopDef ? (
-              <div className="mt-3 border-t border-slate-800/90 pt-3">
-                <SirenButton
-                  label={stopDef.label}
-                  icon={soundDefinitionIcon(stopDef)}
-                  active={false}
-                  danger
-                  onClick={() => {
-                    vibrate([18, 30, 18])
-                    stopAll(stopDef.stopChirp)
-                  }}
-                />
-              </div>
-            ) : null}
           </div>
+          {stopDef ? (
+            <div className="mt-3">
+              <SirenButton
+                label={stopDef.label}
+                icon={soundDefinitionIcon(stopDef)}
+                active={false}
+                danger
+                onClick={() => {
+                  vibrate([18, 30, 18])
+                  stopAll(stopDef.stopChirp)
+                }}
+              />
+            </div>
+          ) : null}
         </section>
 
         {hasOverlaySection ? (
@@ -334,7 +448,8 @@ export function SirenControlPage() {
                 leftDb={debugSnapshot.masterPostLimiterDbFs}
                 rightDb={debugSnapshot.masterPostLimiterDbFs}
               />
-              <AudioVisualizer />
+              {/* Test A/B : désactivé pour isoler l’impact rAF + analyser sur les glitches — remettre `true` pour réactiver */}
+              {false && <AudioVisualizer />}
               {isDebug ? (
                 <AudioDebugPanel
                   voices={debugSnapshot.voices}

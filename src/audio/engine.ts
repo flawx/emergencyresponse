@@ -65,6 +65,20 @@ class AudioEngine {
   private readonly loudnessTargetDb = -11
   private mediaStreamDestination?: MediaStreamAudioDestinationNode
   private outputAudioEl?: HTMLAudioElement
+  /** `false` au boot : sortie native `context.destination` (évite glitches MediaStream). Passage à `true` via `enableMediaStreamOutput` (ex. Settings / `setSinkId`). */
+  private useMediaStreamOutput = false
+  /**
+   * Court laps de temps après `init` : on évite de reprogrammer l’EQ master (présence / highshelf)
+   * à chaque `play`/`stop`, alors que `createMasterChain` a déjà posé les cibles « une voix ».
+   * Un seul rattrapage à la fin aligne l’EQ sur le nombre de voix réel (ex. passage multi).
+   *
+   * Note : ne pas appliquer la même garde à `updateAllActiveVoiceTrimGains` — elle est indispensable
+   * dès le premier `play()` pour sortir les `gainNode` de voix de 0.
+   */
+  private masterEqWarmUpActive = false
+  private masterEqWarmUpTimer: ReturnType<typeof setTimeout> | undefined
+  /** Une fois le flux MediaStream → `<audio>` démarré, ne plus appliquer le warm-up muet. */
+  private outputAudioWarmupComplete = false
 
   private sirenCtx(): SirenBuildContext {
     return {
@@ -79,17 +93,33 @@ class AudioEngine {
     if (this.initialized) return
     this.DEBUG_AUDIO =
       typeof window !== 'undefined' && window.location.search.includes('debugAudio=1')
-    this.context = new AudioContext({ latencyHint: 'interactive' })
-    this.mediaStreamDestination = this.context.createMediaStreamDestination()
-    this.masterChain = createMasterChain(this.context, this.mediaStreamDestination)
-    this.outputAudioEl = new Audio()
-    this.outputAudioEl.autoplay = true
-    this.outputAudioEl.setAttribute('playsinline', '')
-    this.outputAudioEl.srcObject = this.mediaStreamDestination.stream
-    this.outputAudioEl.style.display = 'none'
-    if (typeof document !== 'undefined') {
-      document.body.appendChild(this.outputAudioEl)
+
+    /** Taux d’échantillonnage par défaut du device (probe fermée tout de suite — pas de contexte persistant en plus). */
+    let outputSampleRate: number | undefined
+    if (typeof window !== 'undefined' && typeof AudioContext !== 'undefined') {
+      try {
+        const probe = new AudioContext()
+        outputSampleRate = probe.sampleRate
+        await probe.close()
+      } catch {
+        // fallback : contexte principal sans sampleRate explicite
+      }
     }
+
+    this.context = new AudioContext({
+      latencyHint: 'interactive',
+      ...(outputSampleRate != null && outputSampleRate > 0 ? { sampleRate: outputSampleRate } : {}),
+    })
+
+    if (import.meta.env.DEV) {
+      console.log('[Audio] sampleRate:', this.context.sampleRate)
+    }
+
+    this.useMediaStreamOutput = false
+    this.mediaStreamDestination = undefined
+    this.outputAudioEl = undefined
+    this.masterChain = createMasterChain(this.context, this.context.destination)
+    this.logDebug('[routing] boot: master → context.destination (MediaStream désactivé)')
     this.mixGain = this.masterChain.mixGain
     this.masterGain = this.masterChain.masterGain
     this.analyser = this.masterChain.analyser
@@ -102,6 +132,20 @@ class AudioEngine {
     await this.loadPoliceHornBuffer()
     await this.loadAirHornBuffer()
     this.initialized = true
+
+    this.masterEqWarmUpActive = true
+    if (typeof window !== 'undefined') {
+      if (this.masterEqWarmUpTimer !== undefined) {
+        window.clearTimeout(this.masterEqWarmUpTimer)
+      }
+      this.masterEqWarmUpTimer = window.setTimeout(() => {
+        this.masterEqWarmUpTimer = undefined
+        this.masterEqWarmUpActive = false
+        this.syncMasterEqToVoiceCount()
+      }, 2000)
+    } else {
+      this.masterEqWarmUpActive = false
+    }
   }
 
   private async loadPoliceHornBuffer(): Promise<void> {
@@ -148,13 +192,141 @@ class AudioEngine {
     await this.ensureOutputElementPlaying()
   }
 
+  /**
+   * Attend que le `<audio>` ait assez de données sur le MediaStream avant `play()`
+   * (évite instabilité / artefacts les premiers instants).
+   */
+  private waitForOutputCanPlay(el: HTMLAudioElement): Promise<void> {
+    if (typeof window === 'undefined') return Promise.resolve()
+    if (el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return Promise.resolve()
+    return new Promise((resolve) => {
+      const finish = () => {
+        el.removeEventListener('canplay', finish)
+        el.removeEventListener('loadeddata', finish)
+        window.clearTimeout(fallbackId)
+        resolve()
+      }
+      el.addEventListener('canplay', finish, { once: true })
+      el.addEventListener('loadeddata', finish, { once: true })
+      const fallbackId = window.setTimeout(finish, 400)
+    })
+  }
+
+  /**
+   * Débranche `finalLimiter` de la sortie principale (`destination` ou `MediaStreamDestination`) sans toucher le tap vers `analyser`.
+   */
+  private disconnectFinalLimiterFromMainOutput() {
+    const chain = this.masterChain
+    const ctx = this.context
+    if (!chain || !ctx) return
+    const fl = chain.finalLimiter
+    try {
+      fl.disconnect(ctx.destination)
+    } catch {
+      /* pas connecté */
+    }
+    if (this.mediaStreamDestination) {
+      try {
+        fl.disconnect(this.mediaStreamDestination)
+      } catch {
+        /* pas connecté */
+      }
+    }
+  }
+
+  /**
+   * Active MediaStream + `<audio>` (après un geste utilisateur, ex. choix de périphérique) et branche le master dessus.
+   */
+  async enableMediaStreamOutput(deviceId?: string): Promise<void> {
+    if (!this.initialized) await this.init()
+    const ctx = this.context
+    const chain = this.masterChain
+    if (!ctx || !chain) throw new Error('Audio not initialized')
+    if (typeof document === 'undefined') {
+      throw new Error('MediaStream output requires a browser document')
+    }
+
+    if (this.useMediaStreamOutput && this.outputAudioEl && this.mediaStreamDestination) {
+      if (deviceId && supportsSetSinkId()) {
+        await this.outputAudioEl.setSinkId(deviceId)
+      }
+      await this.ensureOutputElementPlaying()
+      return
+    }
+
+    this.disconnectFinalLimiterFromMainOutput()
+
+    this.mediaStreamDestination = ctx.createMediaStreamDestination()
+    const el = new Audio()
+    el.autoplay = false
+    el.setAttribute('playsinline', '')
+    el.srcObject = this.mediaStreamDestination.stream
+    el.style.display = 'none'
+    document.body.appendChild(el)
+    this.outputAudioEl = el
+
+    chain.finalLimiter.connect(this.mediaStreamDestination)
+    this.useMediaStreamOutput = true
+
+    if (deviceId && supportsSetSinkId()) {
+      await el.setSinkId(deviceId)
+    }
+    await this.ensureOutputElementPlaying()
+    this.logDebug(
+      `[routing] MediaStream + <audio> activés${deviceId ? ` sink=${deviceId.slice(0, 12)}…` : ''}`,
+    )
+  }
+
+  /** Revient à la sortie native Web Audio (plus de MediaStream / `<audio>`). */
+  async disableMediaStreamOutput(): Promise<void> {
+    if (!this.useMediaStreamOutput) return
+    const ctx = this.context
+    const chain = this.masterChain
+    if (!ctx || !chain) {
+      this.useMediaStreamOutput = false
+      return
+    }
+
+    this.disconnectFinalLimiterFromMainOutput()
+    chain.finalLimiter.connect(ctx.destination)
+
+    const el = this.outputAudioEl
+    if (el && typeof document !== 'undefined') {
+      try {
+        el.pause()
+      } catch {
+        /* ignore */
+      }
+      el.srcObject = null
+      el.remove()
+    }
+    this.outputAudioEl = undefined
+    this.mediaStreamDestination = undefined
+    this.useMediaStreamOutput = false
+    this.outputAudioWarmupComplete = false
+    this.logDebug('[routing] master → context.destination (MediaStream désactivé)')
+  }
+
   /** Lecture du flux master via `<audio>` (obligatoire lorsque la sortie passe par MediaStream). */
   private async ensureOutputElementPlaying() {
+    if (!this.useMediaStreamOutput) return
     const el = this.outputAudioEl
-    if (!el) return
+    if (!el || typeof window === 'undefined') return
     try {
+      await this.waitForOutputCanPlay(el)
+      const firstStart = !this.outputAudioWarmupComplete
+      if (firstStart) {
+        el.muted = true
+      }
       await el.play()
+      if (firstStart) {
+        this.outputAudioWarmupComplete = true
+        window.setTimeout(() => {
+          el.muted = false
+        }, 500)
+      }
     } catch {
+      el.muted = false
       // Autoplay bloqué jusqu’à une interaction utilisateur — `resume()` est appelé après gesture dans le store.
     }
   }
@@ -171,9 +343,11 @@ class AudioEngine {
     if (!this.supportsAudioOutputSelection()) {
       throw new Error('setSinkId is not supported in this browser')
     }
-    const el = this.outputAudioEl
-    if (!el) throw new Error('Audio output not initialized')
-    await el.setSinkId(deviceId)
+    if (!deviceId) {
+      await this.disableMediaStreamOutput()
+      return
+    }
+    await this.enableMediaStreamOutput(deviceId)
   }
 
   getOutputSinkId(): string {
@@ -397,6 +571,7 @@ class AudioEngine {
   /** Réduit le boost présence / air du master quand plusieurs sirènes somment au bus. */
   private syncMasterEqToVoiceCount() {
     if (!this.context || !this.masterEqPresence || !this.masterEqHighShelf) return
+    if (this.masterEqWarmUpActive) return
     const isMulti = this.active.size > 1
     const now = this.context.currentTime
     const presenceTarget = isMulti ? MASTER_EQ_PRESENCE_GAIN_MULTI : MASTER_EQ_PRESENCE_GAIN_SINGLE

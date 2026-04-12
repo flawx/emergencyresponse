@@ -68,7 +68,7 @@ export function SettingsPage() {
       const stored = loadStoredSinkId()
       if (canSelectSink && stored !== null) {
         try {
-          await audioEngine.setOutputDevice(stored)
+          await audioEngine.enableMediaStreamOutput(stored)
           setSelectedDeviceId(stored)
         } catch {
           setSelectedDeviceId(audioEngine.getOutputSinkId() || '')
@@ -104,7 +104,11 @@ export function SettingsPage() {
     if (!canSelectSink) return
     try {
       await ensureReady()
-      await audioEngine.setOutputDevice(deviceId)
+      if (!deviceId) {
+        await audioEngine.disableMediaStreamOutput()
+      } else {
+        await audioEngine.enableMediaStreamOutput(deviceId)
+      }
       setSelectedDeviceId(deviceId)
       saveStoredSinkId(deviceId)
     } catch (e) {
