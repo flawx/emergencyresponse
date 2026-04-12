@@ -39,8 +39,6 @@ export type SoundInstance = {
   voiceTrimBase?: number
   /** Multiplicateur horn sample (1 sinon). */
   hornTrimMul?: number
-  /** `?pipelineAudit=1` : prélèvement gain 1 entre chaîne FR et `gainNode` (two/three-tone). */
-  auditPreGainNode?: GainNode
   /** Entre `gainNode` et `mixGain` quand le panoramique léger multi-voix est actif. */
   stereoPanner?: StereoPannerNode
   voiceInput: GainNode
@@ -56,7 +54,6 @@ export type SoundInstance = {
   holdOffset?: ConstantSourceNode
   jitterIndex?: number
   qBaseFreq?: number
-  qTopFreq?: number
   qMaxFreq?: number
   qHoldActive?: boolean
   qCycleMs?: number
@@ -69,6 +66,4 @@ export type SirenBuildContext = {
   frDebugIsolation: boolean
   noiseBuffer?: AudioBuffer
   logDebug: (message: string) => void
-  /** Insère un nœud de mesure avant `gainNode` sur les voix FR (two/three-tone). */
-  pipelineAudit?: boolean
 }

@@ -79,16 +79,7 @@ function createFrTwoToneVoice(
     postGate = highShelf
     instance.modulationNodes.push(lowMid, bp1, bp2, highShelf)
   }
-  if (ctx.pipelineAudit) {
-    const auditTap = ac.createGain()
-    auditTap.gain.value = 1
-    postGate.connect(auditTap)
-    auditTap.connect(instance.gainNode)
-    instance.auditPreGainNode = auditTap
-    instance.modulationNodes.push(auditTap)
-  } else {
-    postGate.connect(instance.gainNode)
-  }
+  postGate.connect(instance.gainNode)
   oscA.start(startAt ?? ac.currentTime)
   instance.oscillators.push(oscA)
   if (withDrift) attachAnalogDrift(ac, instance, oscA, 0.05, 1.5)
