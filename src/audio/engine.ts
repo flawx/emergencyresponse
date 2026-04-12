@@ -38,9 +38,9 @@ import { buildNoiseBuffer, getAssetUrl, getDbAtHz, measureRMS } from './utils/au
 const SAMPLE_EXTENSIONS = ['mp3', 'wav', 'ogg']
 
 /** Headroom global sur le gain de voix (évite la saturation au bus). */
-const PLAY_HEADROOM = 0.7
+const PLAY_HEADROOM = 0.6
 /** Atténuation quand une autre voix joue déjà (mix plus propre). */
-const MULTI_VOICE_COMPENSATION = 0.65
+const MULTI_VOICE_COMPENSATION = 0.75
 const MAX_SIMULTANEOUS_VOICES = 2
 
 class AudioEngine {
