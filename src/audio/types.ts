@@ -35,6 +35,14 @@ export type WailYelpUnifiedOptions = Record<string, never>
 export type SoundInstance = {
   id: string
   gainNode: GainNode
+  /** Base après `normalizePresetVolume` — recalcul `gainNode` en multi-voix. */
+  voiceTrimBase?: number
+  /** Multiplicateur horn sample (1 sinon). */
+  hornTrimMul?: number
+  /** `?pipelineAudit=1` : prélèvement gain 1 entre chaîne FR et `gainNode` (two/three-tone). */
+  auditPreGainNode?: GainNode
+  /** Entre `gainNode` et `mixGain` quand le panoramique léger multi-voix est actif. */
+  stereoPanner?: StereoPannerNode
   voiceInput: GainNode
   oscillators: OscillatorNode[]
   lfoNodes: OscillatorNode[]
@@ -61,4 +69,6 @@ export type SirenBuildContext = {
   frDebugIsolation: boolean
   noiseBuffer?: AudioBuffer
   logDebug: (message: string) => void
+  /** Insère un nœud de mesure avant `gainNode` sur les voix FR (two/three-tone). */
+  pipelineAudit?: boolean
 }

@@ -1,5 +1,12 @@
 import { makeDistortionCurve } from './utils/distortion'
 
+/** EQ master : cible « une voix » (présence / air). */
+export const MASTER_EQ_PRESENCE_GAIN_SINGLE = 5.2
+export const MASTER_EQ_HIGHSHELF_GAIN_SINGLE = 7.2
+/** EQ master : plusieurs sirènes — moins de boost dans les mêmes bandes (réduit le masquage). */
+export const MASTER_EQ_PRESENCE_GAIN_MULTI = 2.5
+export const MASTER_EQ_HIGHSHELF_GAIN_MULTI = 3.5
+
 export type MasterChain = {
   mixGain: GainNode
   saturatorInputGain: GainNode
@@ -50,11 +57,11 @@ export function createMasterChain(ctx: AudioContext): MasterChain {
   masterEqPresence.type = 'peaking'
   masterEqPresence.frequency.value = 1900
   masterEqPresence.Q.value = 0.9
-  masterEqPresence.gain.value = 5.2
+  masterEqPresence.gain.value = MASTER_EQ_PRESENCE_GAIN_SINGLE
   const masterEqHighShelf = ctx.createBiquadFilter()
   masterEqHighShelf.type = 'highshelf'
   masterEqHighShelf.frequency.value = 3600
-  masterEqHighShelf.gain.value = 7.2
+  masterEqHighShelf.gain.value = MASTER_EQ_HIGHSHELF_GAIN_SINGLE
   const dcBlocker = ctx.createBiquadFilter()
   dcBlocker.type = 'highpass'
   dcBlocker.frequency.value = 20

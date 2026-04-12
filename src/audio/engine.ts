@@ -6,7 +6,14 @@ import {
   logMasterDestinationRouting,
 } from './debug'
 import { HORN_FIRE_GAIN, HORN_POLICE_GAIN, createHorn } from './horns'
-import { createMasterChain, type MasterChain } from './masterChain'
+import {
+  createMasterChain,
+  MASTER_EQ_HIGHSHELF_GAIN_MULTI,
+  MASTER_EQ_HIGHSHELF_GAIN_SINGLE,
+  MASTER_EQ_PRESENCE_GAIN_MULTI,
+  MASTER_EQ_PRESENCE_GAIN_SINGLE,
+  type MasterChain,
+} from './masterChain'
 import type { SilenceDiagnostics, SirenBuildContext, SoundInstance, SoundPreset } from './types'
 export type {
   DebugVoice,
@@ -42,7 +49,11 @@ class AudioEngine {
   private mixGain?: GainNode
   private masterGain?: GainNode
   private analyser?: AnalyserNode
+  /** Diagnostic `?masterCheck=1` : sortie somme des voix avant HP180 / saturateur / EQ master. */
+  private preMasterAnalyser?: AnalyserNode
   private analyserDebugPreFinalEq?: AnalyserNode
+  private masterEqPresence?: BiquadFilterNode
+  private masterEqHighShelf?: BiquadFilterNode
   private initialized = false
   private samples = new Map<string, AudioBuffer>()
   private active = new Map<string, SoundInstance>()
@@ -60,7 +71,15 @@ class AudioEngine {
       frDebugIsolation: this.frDebugIsolation,
       noiseBuffer: this.noiseBuffer,
       logDebug: (m) => this.logDebug(m),
+      pipelineAudit: this.isPipelineAudit(),
     }
+  }
+
+  private isPipelineAudit(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('pipelineAudit') === '1'
+    )
   }
 
   async init() {
@@ -73,6 +92,12 @@ class AudioEngine {
     this.masterGain = this.masterChain.masterGain
     this.analyser = this.masterChain.analyser
     this.analyserDebugPreFinalEq = this.masterChain.analyserDebugPreFinalEq
+    this.masterEqPresence = this.masterChain.masterEqPresence
+    this.masterEqHighShelf = this.masterChain.masterEqHighShelf
+
+    this.preMasterAnalyser = this.context.createAnalyser()
+    this.preMasterAnalyser.fftSize = 2048
+    this.mixGain.connect(this.preMasterAnalyser)
 
     logMasterDestinationRouting((m) => this.logDebug(m))
     this.noiseBuffer = buildNoiseBuffer(this.context)
@@ -248,7 +273,10 @@ class AudioEngine {
 
     const gainNode = this.context.createGain()
     gainNode.gain.value = 0
-    gainNode.connect(this.mixGain)
+    const stereoPanner = this.context.createStereoPanner()
+    stereoPanner.pan.value = this.stereoPanForSirenKind(presetResolved.kind)
+    gainNode.connect(stereoPanner)
+    stereoPanner.connect(this.mixGain)
 
     const voiceInput = this.context.createGain()
     voiceInput.gain.value = 1
@@ -257,6 +285,7 @@ class AudioEngine {
     const instance: SoundInstance = {
       id,
       gainNode,
+      stereoPanner,
       voiceInput,
       oscillators: [],
       lfoNodes: [],
@@ -297,33 +326,299 @@ class AudioEngine {
       }, 200)
     }
 
-    const now = this.context.currentTime
     const normalizedGain = this.normalizePresetVolume(preset.kind, preset.gain)
     const calibration = resolveAudioCalibration(id)
     instance.voiceInput.gain.value *= calibration
 
-    const otherVoices = this.active.size
-    const multiCompensation = otherVoices >= 1 ? MULTI_VOICE_COMPENSATION : 1
-    const trimGain = normalizedGain * PLAY_HEADROOM * multiCompensation
-    this.logDebug(
-      `[GAIN] id=${id} norm=${normalizedGain.toFixed(4)} cal=${calibration} trim=${trimGain.toFixed(4)} voiceIn=${instance.voiceInput.gain.value.toFixed(4)}`,
-    )
-
     const hornSampleInstant =
       instance.debug.modulation === 'horn-us-police-sample' ||
       instance.debug.modulation === 'horn-us-fire-sample'
-    if (hornSampleInstant) {
-      gainNode.gain.cancelScheduledValues(now)
-      const hornMul =
-        instance.debug.modulation === 'horn-us-police-sample' ? HORN_POLICE_GAIN : HORN_FIRE_GAIN
-      gainNode.gain.setValueAtTime(trimGain * hornMul, now)
-    } else {
-      gainNode.gain.setValueAtTime(0, now)
-      gainNode.gain.linearRampToValueAtTime(trimGain, now + 0.02)
-    }
+    const hornMul = hornSampleInstant
+      ? instance.debug.modulation === 'horn-us-police-sample'
+        ? HORN_POLICE_GAIN
+        : HORN_FIRE_GAIN
+      : 1
+    instance.voiceTrimBase = normalizedGain
+    instance.hornTrimMul = hornMul
+
     this.active.set(id, instance)
+    this.syncMasterEqToVoiceCount()
+    this.updateAllActiveVoiceTrimGains()
+
+    const multiAfter = this.active.size > 1 ? MULTI_VOICE_COMPENSATION : 1
+    const effectiveTrim = normalizedGain * PLAY_HEADROOM * multiAfter * hornMul
+    this.logDebug(
+      `[GAIN] id=${id} norm=${normalizedGain.toFixed(4)} cal=${calibration} trim=${effectiveTrim.toFixed(4)} voiceIn=${instance.voiceInput.gain.value.toFixed(4)} multi=${multiAfter}`,
+    )
+    this.scheduleMasterCheckLog(id)
+    this.schedulePipelineAuditLog(id, instance)
     this.logDebug(`[play] ${id} kind=${preset.kind}`)
     return true
+  }
+
+  /**
+   * Recalcule le trim `gainNode` pour **toutes** les voix actives avec le même `MULTI_VOICE_COMPENSATION`,
+   * pour que l’ordre d’activation (2ᵉ voix directe ou après d’autres actions) ne laisse pas une voix à multi=1.
+   */
+  private updateAllActiveVoiceTrimGains() {
+    if (!this.context) return
+    if (this.active.size === 0) return
+    const multi = this.active.size > 1 ? MULTI_VOICE_COMPENSATION : 1
+    const now = this.context.currentTime
+    const timeConstant = 0.03
+    for (const [, inst] of this.active) {
+      const base = inst.voiceTrimBase
+      if (base === undefined) continue
+      const horn = inst.hornTrimMul ?? 1
+      const target = base * PLAY_HEADROOM * multi * horn
+      const current = inst.gainNode.gain.value
+      inst.gainNode.gain.cancelScheduledValues(now)
+      inst.gainNode.gain.setValueAtTime(current, now)
+      inst.gainNode.gain.setTargetAtTime(target, now, timeConstant)
+    }
+    this.logDebug(`[multi-trim] voices=${this.active.size} multi=${multi}`)
+  }
+
+  /** Pic max |x| sur le tampon temporel (détection clipping float > 1). */
+  private peakAbsFromAnalyser(a: AnalyserNode): number {
+    const buffer = new Float32Array(a.fftSize)
+    a.getFloatTimeDomainData(buffer)
+    let peak = 0
+    for (let i = 0; i < buffer.length; i += 1) {
+      const v = Math.abs(buffer[i]!)
+      if (v > peak) peak = v
+    }
+    return peak
+  }
+
+  /**
+   * Comparaison RMS pré / post chaîne master. Activer avec `?masterCheck=1`.
+   * Interprétation indicative : voir doc utilisateur (delta négatif fort → atténuation / compression côté master).
+   */
+  private scheduleMasterCheckLog(id: string) {
+    if (typeof window === 'undefined') return
+    if (new URLSearchParams(window.location.search).get('masterCheck') !== '1') return
+    const preA = this.preMasterAnalyser
+    const postA = this.analyser
+    if (!preA || !postA) return
+
+    window.setTimeout(() => {
+      const pre = measureRMS(preA)
+      const post = measureRMS(postA)
+      const preDb = pre > 1e-6 ? 20 * Math.log10(pre) : -Infinity
+      const postDb = post > 1e-6 ? 20 * Math.log10(post) : -Infinity
+      const deltaDb =
+        Number.isFinite(preDb) && Number.isFinite(postDb) ? postDb - preDb : Number.NaN
+      const peakPre = this.peakAbsFromAnalyser(preA)
+      const peakPost = this.peakAbsFromAnalyser(postA)
+
+      console.log('[MASTER CHECK]', {
+        id,
+        voices: this.active.size,
+        preDb: Number.isFinite(preDb) ? preDb.toFixed(1) : '-∞',
+        postDb: Number.isFinite(postDb) ? postDb.toFixed(1) : '-∞',
+        deltaDb: Number.isFinite(deltaDb) ? deltaDb.toFixed(1) : 'n/a',
+        clipPre: peakPre > 1,
+        clipPost: peakPost > 1,
+        peakPre: peakPre.toFixed(4),
+        peakPost: peakPost.toFixed(4),
+      })
+    }, 200)
+  }
+
+  /**
+   * Audit multi-taps RMS + pics. URL `?pipelineAudit=1`.
+   *
+   * Chaîne réelle (résumé) :
+   * - **WAIL/YELP** : osc → … → `connectUnifiedSirenSourceToVoiceInput` (preGain → tanh → LP → HP250) → **voiceInput**
+   *   (× calibration) → **gainNode** (trim × headroom × multi-comp) → **stereoPanner** → **mixGain** → master :
+   *   HP180 → saturatorInputGain → WaveShaper → DynamicsCompressor → makeupGain → masterGain → (‖ debug analyser)
+   *   → peaking présence → high-shelf → DC HP → **finalLimiter** → destination ‖ **analyser** (post-master).
+   * - **2-tone / 3-tone FR** : osc → `connectFrSourceWithTimbre` (HP190 → shaper → DCHP → LP) → **voiceInput** (× cal)
+   *   → gate → comp FR → makeup → EQ (… si `pipelineAudit`, **auditTap** gain 1) → **gainNode** → panner → mixGain → …
+   */
+  private schedulePipelineAuditLog(id: string, instance: SoundInstance) {
+    if (!this.isPipelineAudit() || !this.context) return
+
+    const fft = 2048
+    const aVoiceIn = this.context.createAnalyser()
+    aVoiceIn.fftSize = fft
+    const aPostChain = this.context.createAnalyser()
+    aPostChain.fftSize = fft
+    const aGainNode = this.context.createAnalyser()
+    aGainNode.fftSize = fft
+
+    instance.voiceInput.connect(aVoiceIn)
+    if (instance.auditPreGainNode) {
+      instance.auditPreGainNode.connect(aPostChain)
+    } else {
+      instance.voiceInput.connect(aPostChain)
+    }
+    instance.gainNode.connect(aGainNode)
+
+    instance.modulationNodes.push(aVoiceIn, aPostChain, aGainNode)
+
+    const preMasterA = this.preMasterAnalyser
+    const postMasterA = this.analyser
+
+    window.setTimeout(() => {
+      const rmsDb = (rms: number) => (rms > 1e-6 ? 20 * Math.log10(rms) : -Infinity)
+      const fmt = (db: number) => (Number.isFinite(db) ? db.toFixed(1) : '-∞')
+
+      const voiceInputDb = rmsDb(measureRMS(aVoiceIn))
+      const postVoiceChainDb = rmsDb(measureRMS(aPostChain))
+      const gainNodeDb = rmsDb(measureRMS(aGainNode))
+      const mixDb = preMasterA ? rmsDb(measureRMS(preMasterA)) : Number.NaN
+      const masterDb = postMasterA ? rmsDb(measureRMS(postMasterA)) : Number.NaN
+
+      const peakVi = this.peakAbsFromAnalyser(aVoiceIn)
+      const peakPost = this.peakAbsFromAnalyser(aPostChain)
+      const peakGn = this.peakAbsFromAnalyser(aGainNode)
+      const peakMix = preMasterA ? this.peakAbsFromAnalyser(preMasterA) : 0
+      const peakMaster = postMasterA ? this.peakAbsFromAnalyser(postMasterA) : 0
+
+      const { hints, primaryLead } = this.interpretPipelineAudit({
+        voiceIn: voiceInputDb,
+        post: postVoiceChainDb,
+        gn: gainNodeDb,
+        mix: mixDb,
+        master: masterDb,
+        peakVi,
+        peakPost,
+        peakGn,
+        peakMix,
+        peakMaster,
+        voices: this.active.size,
+        hasFrTap: !!instance.auditPreGainNode,
+      })
+
+      console.log('[PIPELINE AUDIT]', {
+        id,
+        voices: this.active.size,
+        voiceInputDb: fmt(voiceInputDb),
+        postVoiceChainDb: fmt(postVoiceChainDb),
+        gainNodeDb: fmt(gainNodeDb),
+        mixDb: Number.isFinite(mixDb) ? fmt(mixDb) : 'n/a',
+        masterDb: Number.isFinite(masterDb) ? fmt(masterDb) : 'n/a',
+        deltaPostToGnDb:
+          Number.isFinite(postVoiceChainDb) && Number.isFinite(gainNodeDb)
+            ? (gainNodeDb - postVoiceChainDb).toFixed(1)
+            : 'n/a',
+        deltaMixToMasterDb:
+          Number.isFinite(mixDb) && Number.isFinite(masterDb) ? (masterDb - mixDb).toFixed(1) : 'n/a',
+        clipVoiceIn: peakVi > 1,
+        clipPostChain: peakPost > 1,
+        clipGainNode: peakGn > 1,
+        clipMix: peakMix > 1,
+        clipMaster: peakMaster > 1,
+        peakVoiceIn: peakVi.toFixed(4),
+        peakPostChain: peakPost.toFixed(4),
+        peakGainNode: peakGn.toFixed(4),
+        peakMix: peakMix.toFixed(4),
+        peakMaster: peakMaster.toFixed(4),
+        note:
+          'postVoiceChainDb = même point que voiceInputDb si pas de chaîne FR (WAIL/Yelp…). Analyseurs mix/master : fft 2048 / 128 — comparer les RMS en tendance, pas au dB près.',
+        hints,
+        primaryLead,
+      })
+    }, 200)
+  }
+
+  private interpretPipelineAudit(p: {
+    voiceIn: number
+    post: number
+    gn: number
+    mix: number
+    master: number
+    peakVi: number
+    peakPost: number
+    peakGn: number
+    peakMix: number
+    peakMaster: number
+    voices: number
+    hasFrTap: boolean
+  }): { hints: string[]; primaryLead: string } {
+    const hints: string[] = []
+    const f = Number.isFinite
+
+    if (p.hasFrTap && f(p.voiceIn) && f(p.post) && p.post - p.voiceIn < -2) {
+      hints.push(
+        'FR : baisse > ~2 dB entre sortie voiceInput et fin gate/comp/EQ (avant gainNode) — le traitement FR absorbe ou tasse le signal.',
+      )
+    }
+
+    if (f(p.post) && f(p.gn) && p.gn - p.post < -4) {
+      hints.push(
+        'Fort écart fin de chaîne voix → sortie gainNode : normal en partie (trim × PLAY_HEADROOM × multi-comp sur gainNode ; wobble sur gain). Si > ~8 dB avec voix seule, vérifier calibration + trim.',
+      )
+    }
+
+    if (f(p.mix) && f(p.master) && p.master - p.mix < -2.5) {
+      hints.push(
+        'Le master abaisse le RMS global (saturateur, EQ présence/shelf, compresseur master, limiteur) : chute mix→sortie.',
+      )
+    }
+
+    if (p.peakMix > 0.98 || p.peakMaster > 0.98) {
+      hints.push(
+        'Pics float ≈ 1 sur mix ou post-master : waveshaper / limiteur / saturation du bus — corrélation probable avec grésillement perçu.',
+      )
+    }
+
+    if (p.voices > 1 && f(p.mix) && f(p.master) && p.master - p.mix < -3) {
+      hints.push(
+        'Multi-voix : si mixDb monte fort par rapport au solo mais masterDb plafonne ou descend, le limiteur / compresseur master réagit fortement (écrasement).',
+      )
+    }
+
+    if (hints.length === 0) {
+      hints.push('Aucun seuil heuristique dépassé : comparer manuellement solo vs duo et les deltas listés.')
+    }
+
+    let primaryLead =
+      'Aucune cause unique inférée sans comparer les 3 captures (WAIL seul, 2-tone seul, duo) — utiliser les deltas et pics.'
+
+    if (p.peakMix > 1 || p.peakMaster > 1) {
+      primaryLead =
+        'Piste prioritaire : surcharge du bus (pics > 1) — réduire l’énergie avant le saturateur master (ex. `saturatorInputGain` ou headroom des voix), puis re-mesurer.'
+    } else if (p.hasFrTap && f(p.voiceIn) && f(p.post) && p.post - p.voiceIn < -3) {
+      primaryLead =
+        'Piste prioritaire : traitement FR (compresseur / EQ) trop absorbant — assouplir seuil/ratio du comp FR ou réduire légèrement les boosts 500–1,8 kHz avant de toucher au master.'
+    } else if (f(p.mix) && f(p.master) && p.master - p.mix < -4 && p.peakMix <= 0.95) {
+      primaryLead =
+        'Piste prioritaire : chaîne master (EQ + comp + limiteur) réduit fort le niveau sans pic extrême sur mix — revoir gains de présence/shelf ou `masterMakeupGain` / seuil limiteur.'
+    }
+
+    return { hints, primaryLead }
+  }
+
+  /** Réduit le boost présence / air du master quand plusieurs sirènes somment au bus. */
+  private syncMasterEqToVoiceCount() {
+    if (!this.context || !this.masterEqPresence || !this.masterEqHighShelf) return
+    const isMulti = this.active.size > 1
+    const now = this.context.currentTime
+    const presenceTarget = isMulti ? MASTER_EQ_PRESENCE_GAIN_MULTI : MASTER_EQ_PRESENCE_GAIN_SINGLE
+    const shelfTarget = isMulti ? MASTER_EQ_HIGHSHELF_GAIN_MULTI : MASTER_EQ_HIGHSHELF_GAIN_SINGLE
+    this.masterEqPresence.gain.cancelScheduledValues(now)
+    this.masterEqHighShelf.gain.cancelScheduledValues(now)
+    this.masterEqPresence.gain.setTargetAtTime(presenceTarget, now, 0.04)
+    this.masterEqHighShelf.gain.setTargetAtTime(shelfTarget, now, 0.04)
+  }
+
+  /** Séparation légère WAIL (gauche) vs tons FR (droite) en stéréo. */
+  private stereoPanForSirenKind(kind: SoundKind): number {
+    switch (kind) {
+      case 'wail':
+        return -0.1
+      case 'twoTone':
+      case 'twoToneA':
+      case 'twoToneM':
+      case 'twoToneUmh':
+      case 'threeTone':
+        return 0.1
+      default:
+        return 0
+    }
   }
 
   private getUnifiedGain(kind: SoundKind) {
@@ -418,9 +713,12 @@ class AudioEngine {
         node.disconnect()
       })
       if (instance.timer) window.clearInterval(instance.timer)
+      instance.stereoPanner?.disconnect()
       instance.voiceInput.disconnect()
       instance.gainNode.disconnect()
       this.active.delete(id)
+      this.syncMasterEqToVoiceCount()
+      this.updateAllActiveVoiceTrimGains()
     }, (fadeOut + 0.04) * 1000)
   }
 

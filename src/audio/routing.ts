@@ -56,11 +56,16 @@ export function connectUnifiedSirenSourceToVoiceInput(
   toneLp.type = 'lowpass'
   toneLp.frequency.value = 3500
   toneLp.Q.value = 0.85
+  const wailYelpHp = ctx.createBiquadFilter()
+  wailYelpHp.type = 'highpass'
+  wailYelpHp.frequency.value = 250
+  wailYelpHp.Q.value = 0.707
   source.connect(preGain)
   preGain.connect(tanhShaper)
   tanhShaper.connect(toneLp)
-  toneLp.connect(instance.voiceInput)
-  instance.modulationNodes.push(preGain, tanhShaper, toneLp)
+  toneLp.connect(wailYelpHp)
+  wailYelpHp.connect(instance.voiceInput)
+  instance.modulationNodes.push(preGain, tanhShaper, toneLp, wailYelpHp)
 }
 
 export function connectFrOscWithTimbre(

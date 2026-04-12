@@ -61,12 +61,12 @@ function createFrTwoToneVoice(
     bp1.type = 'peaking'
     bp1.frequency.value = 1200
     bp1.Q.value = 1.1
-    bp1.gain.value = 2.5
+    bp1.gain.value = 1.5
     const bp2 = ac.createBiquadFilter()
     bp2.type = 'peaking'
     bp2.frequency.value = 1800
     bp2.Q.value = 1.2
-    bp2.gain.value = 2.5
+    bp2.gain.value = 1.5
     const highShelf = ac.createBiquadFilter()
     highShelf.type = 'highshelf'
     highShelf.frequency.value = 3200
@@ -79,7 +79,16 @@ function createFrTwoToneVoice(
     postGate = highShelf
     instance.modulationNodes.push(lowMid, bp1, bp2, highShelf)
   }
-  postGate.connect(instance.gainNode)
+  if (ctx.pipelineAudit) {
+    const auditTap = ac.createGain()
+    auditTap.gain.value = 1
+    postGate.connect(auditTap)
+    auditTap.connect(instance.gainNode)
+    instance.auditPreGainNode = auditTap
+    instance.modulationNodes.push(auditTap)
+  } else {
+    postGate.connect(instance.gainNode)
+  }
   oscA.start(startAt ?? ac.currentTime)
   instance.oscillators.push(oscA)
   if (withDrift) attachAnalogDrift(ac, instance, oscA, 0.05, 1.5)
