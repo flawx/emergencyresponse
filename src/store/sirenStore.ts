@@ -3,6 +3,8 @@ import { audioEngine } from '../audio/engine'
 import {
   EU_AMBU_BASE_MAIN_IDS,
   Q_SIREN_SOUND_ID,
+  canIgnoreExplicitExclusive,
+  canPlayTogether,
   getAllPlayableSoundIds,
   getScenario,
   getSoundDefinitionById,
@@ -12,6 +14,11 @@ import {
   type SirenScenario,
   type SoundDefinition,
 } from '../utils/sirenConfig'
+import { loadStoredMasterVolume, saveStoredMasterVolume } from '../utils/masterVolumeStorage'
+
+const AUDIO_ERR_LAYER_LIMIT =
+  'Could not start sound — too many layers at once, or it is already playing.'
+const AUDIO_ERR_LAYER_COMPAT = 'These siren layers cannot be combined.'
 
 /** Fade sortie voix précédente : même famille = chevauchement court avec la nouvelle (crossfade). */
 const MAIN_MODE_FADE_OUT_SAME_FAMILY_S = 0.038
@@ -114,6 +121,50 @@ function isHoldOverrideSound(sound: SoundDefinition): boolean {
   return sound.mode === 'hold' && sound.kind !== 'qsiren'
 }
 
+function collectOverlaySoundDefinitions(overlays: SirenOverlaysState): SoundDefinition[] {
+  const out: SoundDefinition[] = []
+  if (overlays.qSiren) {
+    const d = getSoundDefinitionById(Q_SIREN_SOUND_ID)
+    if (d) out.push(d)
+  }
+  if (overlays.euAmbuWail) {
+    const d = getSoundDefinitionById('eu-ambu-wail')
+    if (d) out.push(d)
+  }
+  if (overlays.euAmbuYelp) {
+    const d = getSoundDefinitionById('eu-ambu-yelp')
+    if (d) out.push(d)
+  }
+  return out
+}
+
+/** Vérifie la matrice `canPlayTogether` / exceptions avant d’activer un mode principal avec overlays restants. */
+function canCombineMainWithOverlays(main: SoundDefinition, overlays: SirenOverlaysState): boolean {
+  for (const o of collectOverlaySoundDefinitions(overlays)) {
+    if (!canPlayTogether(main, o) && !canIgnoreExplicitExclusive(main, o)) return false
+  }
+  return true
+}
+
+/** Vérifie qu’un overlay peut coexister avec le mode principal et les autres overlays déjà actifs. */
+function canAddOverlayToLayers(
+  mainMode: string | null,
+  overlays: SirenOverlaysState,
+  overlayDef: SoundDefinition,
+): boolean {
+  if (mainMode) {
+    const main = getSoundDefinitionById(mainMode)
+    if (main && !canPlayTogether(main, overlayDef) && !canIgnoreExplicitExclusive(main, overlayDef)) {
+      return false
+    }
+  }
+  for (const o of collectOverlaySoundDefinitions(overlays)) {
+    if (o.id === overlayDef.id) continue
+    if (!canPlayTogether(o, overlayDef) && !canIgnoreExplicitExclusive(o, overlayDef)) return false
+  }
+  return true
+}
+
 type SirenStore = {
   initialized: boolean
   masterVolume: number
@@ -139,6 +190,9 @@ type SirenStore = {
   updateHoldPressure: (sound: SoundDefinition, pressure: number) => void
   getAudioDebug: () => ReturnType<typeof audioEngine.getDebugSnapshot>
   stopAll: (withChirp?: boolean) => void
+  /** Message court affiché en UI (échec play, incompatibilité couches). */
+  audioError: string | null
+  clearAudioError: () => void
 }
 
 const applyLayerState = (
@@ -163,7 +217,7 @@ const applyLayerState = (
 
 export const useSirenStore = create<SirenStore>((set, get) => ({
   initialized: false,
-  masterVolume: 0.85,
+  masterVolume: loadStoredMasterVolume(),
   mainMode: null,
   overlays: emptyOverlays(),
   holdVoiceId: null,
@@ -171,6 +225,9 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
   manualHoldSoundId: null,
   manualHoldSnapshot: null,
   active: {},
+  audioError: null,
+
+  clearAudioError: () => set({ audioError: null }),
 
   ensureReady: async () => {
     if (get().initialized) {
@@ -180,10 +237,12 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
     await audioEngine.init()
     await audioEngine.resume()
     await audioEngine.preloadSamples(getAllPlayableSoundIds())
+    audioEngine.setMasterVolume(get().masterVolume)
     set({ initialized: true })
   },
 
   setMasterVolume: (value) => {
+    saveStoredMasterVolume(value)
     audioEngine.setMasterVolume(value)
     set({ masterVolume: value })
   },
@@ -233,6 +292,11 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
     if (overlays.euAmbuWail && !nextOverlays.euAmbuWail) audioEngine.stop('eu-ambu-wail')
     if (overlays.euAmbuYelp && !nextOverlays.euAmbuYelp) audioEngine.stop('eu-ambu-yelp')
 
+    if (!canCombineMainWithOverlays(sound, nextOverlays)) {
+      set({ audioError: AUDIO_ERR_LAYER_COMPAT })
+      return
+    }
+
     applyLayerState(set, {
       mainMode: nextMainId,
       overlays: nextOverlays,
@@ -244,6 +308,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
         mainMode: prevMain ?? null,
         overlays,
       })
+      set({ audioError: AUDIO_ERR_LAYER_LIMIT })
       return
     }
 
@@ -273,6 +338,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
     const played = playLayerDef(sound)
     if (!played) {
       void replaySnapshotLayers(snap)
+      set({ audioError: AUDIO_ERR_LAYER_LIMIT })
       return
     }
 
@@ -318,8 +384,15 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
         audioEngine.stop(Q_SIREN_SOUND_ID)
         applyLayerState(set, { overlays: { ...overlays, qSiren: false } })
       } else {
+        if (!canAddOverlayToLayers(mainMode, overlays, def)) {
+          set({ audioError: AUDIO_ERR_LAYER_COMPAT })
+          return
+        }
         const played = playLayerDef(def)
-        if (!played) return
+        if (!played) {
+          set({ audioError: AUDIO_ERR_LAYER_LIMIT })
+          return
+        }
         applyLayerState(set, { overlays: { ...overlays, qSiren: true } })
       }
       stopStaleScenarioToggles(
@@ -361,8 +434,16 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
         next = { ...next, [otherKey]: false }
       }
 
+      if (!canAddOverlayToLayers(mainMode, next, def)) {
+        set({ audioError: AUDIO_ERR_LAYER_COMPAT })
+        return
+      }
+
       const played = playLayerDef(def)
-      if (!played) return
+      if (!played) {
+        set({ audioError: AUDIO_ERR_LAYER_LIMIT })
+        return
+      }
       applyLayerState(set, { overlays: next })
       stopStaleScenarioToggles(
         scenario,
@@ -383,16 +464,22 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
     if (sound.kind === 'qsiren') {
       if (!get().overlays.qSiren) {
+        if (!canAddOverlayToLayers(get().mainMode, get().overlays, sound)) {
+          set({ audioError: AUDIO_ERR_LAYER_COMPAT })
+          return
+        }
         const ok = audioEngine.play(sound.id, {
           kind: sound.kind,
           regionStyle: sound.regionStyle,
           variant: sound.variant,
         })
-        if (ok) {
-          applyLayerState(set, {
-            overlays: { ...get().overlays, qSiren: true },
-          })
+        if (!ok) {
+          set({ audioError: AUDIO_ERR_LAYER_LIMIT })
+          return
         }
+        applyLayerState(set, {
+          overlays: { ...get().overlays, qSiren: true },
+        })
       }
       audioEngine.setQSirenBoost(sound.id, 1)
       return
@@ -413,7 +500,10 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       regionStyle: sound.regionStyle,
       variant: sound.variant,
     })
-    if (!hornOk) return
+    if (!hornOk) {
+      set({ audioError: AUDIO_ERR_LAYER_LIMIT })
+      return
+    }
 
     applyLayerState(set, {
       holdLayersSnapshot: snap,
@@ -453,6 +543,9 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
 
   stopAll: (withChirp = false) => {
     audioEngine.stopAll(withChirp)
+    audioEngine.setMicrophoneActive(false)
+    audioEngine.setSirensDucking(false)
+    audioEngine.setMicrophoneBoost(false)
     set({
       mainMode: null,
       overlays: emptyOverlays(),
@@ -461,6 +554,7 @@ export const useSirenStore = create<SirenStore>((set, get) => ({
       manualHoldSoundId: null,
       manualHoldSnapshot: null,
       active: {},
+      audioError: null,
     })
   },
 }))

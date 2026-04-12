@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { AlertTriangle, Mic } from 'lucide-react'
+import { AlertTriangle, Mic, X } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -13,6 +13,7 @@ import {
 import { Navigate, useParams } from 'react-router-dom'
 import { MasterLevelMeter } from '../components/audio/MasterLevelMeter'
 import { AudioDebugPanel } from '../components/AudioDebugPanel'
+import { ActiveSounds } from '../components/ActiveSounds'
 import { AudioVisualizer } from '../components/AudioVisualizer'
 import { PanelLayout } from '../components/PanelLayout'
 import { SettingsNavButton } from '../components/SettingsNavButton'
@@ -27,6 +28,7 @@ import {
   getMainModeCaption,
   getOverlayIdForSound,
   getScenario,
+  getSoundDefinitionById,
   isMainModeToggle,
   isManualHoldCapable,
 } from '../utils/sirenConfig'
@@ -76,10 +78,29 @@ export function SirenControlPage() {
   const updateHoldPressure = useSirenStore((s) => s.updateHoldPressure)
   const getAudioDebug = useSirenStore((s) => s.getAudioDebug)
   const ensureReady = useSirenStore((s) => s.ensureReady)
+  const audioError = useSirenStore((s) => s.audioError)
+  const clearAudioError = useSirenStore((s) => s.clearAudioError)
+  const active = useSirenStore((s) => s.active)
   const [, bumpHornUi] = useState(0)
   const [debugSnapshot, setDebugSnapshot] = useState(getAudioDebug())
   const qsirenHoldStartedAt = useRef<number | null>(null)
   const qsirenSuppressClick = useRef(false)
+  const scenarioKeyRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!region || !emergency) return
+    const key = `${region}/${emergency}`
+    if (scenarioKeyRef.current !== null && scenarioKeyRef.current !== key) {
+      stopAll(false)
+    }
+    scenarioKeyRef.current = key
+  }, [region, emergency, stopAll])
+
+  useEffect(() => {
+    if (!audioError) return
+    const t = window.setTimeout(() => clearAudioError(), 5200)
+    return () => window.clearTimeout(t)
+  }, [audioError, clearAudioError])
 
   const [selectedMicDeviceId, setSelectedMicDeviceId] = useState(
     () => loadStoredAudioInputDeviceId() ?? '',
@@ -106,12 +127,16 @@ export function SirenControlPage() {
     clearMicPttTimer()
     setMicPttPressed(false)
     audioEngine.setMicrophoneActive(false)
+    audioEngine.setSirensDucking(false)
+    audioEngine.setMicrophoneBoost(false)
   }, [clearMicPttTimer])
 
   useEffect(() => {
     return () => {
       clearMicPttTimer()
       audioEngine.setMicrophoneActive(false)
+      audioEngine.setSirensDucking(false)
+      audioEngine.setMicrophoneBoost(false)
     }
   }, [clearMicPttTimer])
 
@@ -150,6 +175,13 @@ export function SirenControlPage() {
     if (!scenario) return []
     return scenario.defs.filter((d) => d.mode === 'toggle' && isMainModeToggle(d, scenario))
   }, [scenario])
+
+  const activeSoundLabels = useMemo(() => {
+    return Object.entries(active)
+      .filter(([, on]) => on)
+      .map(([id]) => getSoundDefinitionById(id)?.label ?? id)
+      .sort((a, b) => a.localeCompare(b))
+  }, [active])
 
   const modeGridRef = useRef<HTMLDivElement>(null)
   const modeCellRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -409,6 +441,23 @@ export function SirenControlPage() {
       headerActions={<SettingsNavButton />}
     >
       <div className="space-y-6">
+        {audioError ? (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-xl border border-amber-500/45 bg-amber-950/35 px-3 py-2.5 text-amber-100 shadow-[inset_0_1px_0_rgba(251,191,36,0.12)]"
+          >
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" strokeWidth={2} aria-hidden />
+            <p className="min-w-0 flex-1 text-sm leading-snug">{audioError}</p>
+            <button
+              type="button"
+              onClick={() => clearAudioError()}
+              className="shrink-0 rounded-md p-1 text-amber-200/90 hover:bg-amber-500/20 hover:text-amber-50"
+              aria-label="Dismiss message"
+            >
+              <X className="size-4" strokeWidth={2} aria-hidden />
+            </button>
+          </div>
+        ) : null}
         <section>
           <h2 className={sectionTitleClass}>Siren</h2>
           <p className="mb-2 text-[11px] text-slate-500">Select a siren mode</p>
@@ -527,6 +576,8 @@ export function SirenControlPage() {
                   micPttActivateTimerRef.current = null
                   if (micPttStillDownRef.current) {
                     audioEngine.setMicrophoneActive(true)
+                    audioEngine.setSirensDucking(true)
+                    audioEngine.setMicrophoneBoost(true)
                   }
                 }, 80)
               }}
@@ -581,6 +632,7 @@ export function SirenControlPage() {
           <h2 className={sectionTitleClass}>System</h2>
           <div className={zoneControlClass}>
             <div className="space-y-6">
+              <ActiveSounds names={activeSoundLabels} />
               <VolumeSlider value={masterVolume} onChange={setMasterVolume} />
               <MasterLevelMeter
                 leftDb={debugSnapshot.masterPostLimiterDbFs}

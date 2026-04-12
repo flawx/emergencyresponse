@@ -52,6 +52,8 @@ class AudioEngine {
   private context?: AudioContext
   private masterChain?: MasterChain
   private mixGain?: GainNode
+  /** Bus sirènes / cornes uniquement ; le micro se branche directement sur `mixGain`. */
+  private sirensBusGain?: GainNode
   private masterGain?: GainNode
   private analyser?: AnalyserNode
   private analyserDebugPreFinalEq?: AnalyserNode
@@ -135,6 +137,10 @@ class AudioEngine {
     this.masterChain = createMasterChain(this.context, this.context.destination)
     this.logDebug('[routing] boot: master → context.destination (MediaStream désactivé)')
     this.mixGain = this.masterChain.mixGain
+    const sirensBus = this.context.createGain()
+    sirensBus.gain.value = 1
+    sirensBus.connect(this.mixGain)
+    this.sirensBusGain = sirensBus
     this.masterGain = this.masterChain.masterGain
     this.analyser = this.masterChain.analyser
     this.analyserDebugPreFinalEq = this.masterChain.analyserDebugPreFinalEq
@@ -513,6 +519,24 @@ class AudioEngine {
     g.gain.setTargetAtTime(enabled ? 1 : 0, now, 0.02)
   }
 
+  /** Atténue les sirènes pendant le PA (micro non routé sur ce bus). */
+  setSirensDucking(active: boolean): void {
+    const ctx = this.context
+    const g = this.sirensBusGain
+    if (!ctx || !g) return
+    const target = active ? 0.6 : 1
+    g.gain.setTargetAtTime(target, ctx.currentTime, 0.05)
+  }
+
+  /** Pré-gain micro : léger boost pendant le PTT (compense le ducking sirènes). */
+  setMicrophoneBoost(active: boolean): void {
+    const ctx = this.context
+    const g = this.micPreGain
+    if (!ctx || !g) return
+    const target = active ? 3.5 : 3
+    g.gain.setTargetAtTime(target, ctx.currentTime, 0.05)
+  }
+
   hasPoliceHorn(): boolean {
     return !!this.policeHornBuffer
   }
@@ -617,7 +641,7 @@ class AudioEngine {
   }
 
   play(id: string, preset: SoundPreset): boolean {
-    if (!this.context || !this.mixGain || !this.initialized) return false
+    if (!this.context || !this.mixGain || !this.sirensBusGain || !this.initialized) return false
     if (this.active.has(id)) return false
     if (this.active.size >= MAX_SIMULTANEOUS_VOICES) return false
 
@@ -636,7 +660,7 @@ class AudioEngine {
     const stereoPanner = this.context.createStereoPanner()
     stereoPanner.pan.value = this.stereoPanForSirenKind(presetResolved.kind)
     gainNode.connect(stereoPanner)
-    stereoPanner.connect(this.mixGain)
+    stereoPanner.connect(this.sirensBusGain)
 
     const voiceInput = this.context.createGain()
     voiceInput.gain.value = 1

@@ -51,7 +51,10 @@ const isFrAmbuTone = (kind: SoundKind) =>
   kind === 'twoTone' || kind === 'threeTone' || kind === 'twoToneUmh'
 const isEuAmbulance = (d: SoundDefinition) => d.regionStyle === 'eu' && d.variant === 'ambulance'
 
-/** Matrice de compatibilité (ex. WAIL+YELP ❌, WAIL+Q-SIREN ✔, EU two-tone+WAIL ✔, THREE-TONE+WAIL ❌). */
+/**
+ * Matrice de compatibilité (ex. WAIL+YELP ❌, WAIL+Q-SIREN ✔, EU two-tone+WAIL ✔, THREE-TONE+WAIL ❌).
+ * Utilisée par `sirenStore` avant d’empiler mode principal + overlays.
+ */
 export const canPlayTogether = (soundA: SoundDefinition, soundB: SoundDefinition) => {
   if (soundA.id === soundB.id) return true
   if (isWailOrYelp(soundA.kind) && isWailOrYelp(soundB.kind)) return false
