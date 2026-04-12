@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Mic } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -31,6 +31,7 @@ import {
   isManualHoldCapable,
 } from '../utils/sirenConfig'
 import { soundDefinitionIcon } from '../utils/sirenButtonIcons'
+import { loadStoredAudioInputDeviceId } from '../utils/audioInputDeviceStorage'
 
 type HoldEvent = PointerEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonElement>
 
@@ -41,6 +42,8 @@ const zoneOverlaysClass =
   'rounded-xl border border-slate-800/90 bg-panel-800/95 p-3 shadow-[inset_0_1px_0_rgba(163,230,53,0.04)]'
 const zoneHornsClass =
   'rounded-xl border border-slate-800/90 bg-[#0a1424] p-3 shadow-[inset_0_1px_0_rgba(56,189,248,0.06)]'
+const zonePaClass =
+  'rounded-xl border border-slate-800/90 bg-[#120f0a] p-3 shadow-[inset_0_1px_0_rgba(251,146,60,0.05)]'
 const zoneControlClass =
   'rounded-xl border border-slate-800 bg-slate-900 p-3 shadow-[inset_0_2px_8px_rgba(0,0,0,0.35)]'
 
@@ -77,6 +80,55 @@ export function SirenControlPage() {
   const [debugSnapshot, setDebugSnapshot] = useState(getAudioDebug())
   const qsirenHoldStartedAt = useRef<number | null>(null)
   const qsirenSuppressClick = useRef(false)
+
+  const [selectedMicDeviceId, setSelectedMicDeviceId] = useState(
+    () => loadStoredAudioInputDeviceId() ?? '',
+  )
+  const [micPttPressed, setMicPttPressed] = useState(false)
+  const micPttActivateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const micPttStillDownRef = useRef(false)
+
+  const syncMicFromStorage = useCallback(() => {
+    const id = loadStoredAudioInputDeviceId() ?? ''
+    setSelectedMicDeviceId(id)
+    return id
+  }, [])
+
+  const clearMicPttTimer = useCallback(() => {
+    if (micPttActivateTimerRef.current != null) {
+      window.clearTimeout(micPttActivateTimerRef.current)
+      micPttActivateTimerRef.current = null
+    }
+  }, [])
+
+  const endMicPttHold = useCallback(() => {
+    micPttStillDownRef.current = false
+    clearMicPttTimer()
+    setMicPttPressed(false)
+    audioEngine.setMicrophoneActive(false)
+  }, [clearMicPttTimer])
+
+  useEffect(() => {
+    return () => {
+      clearMicPttTimer()
+      audioEngine.setMicrophoneActive(false)
+    }
+  }, [clearMicPttTimer])
+
+  useEffect(() => {
+    const id = syncMicFromStorage()
+    if (!id) return
+    void ensureReady().then(() => void audioEngine.enableMicrophone(id).catch(() => {}))
+  }, [ensureReady, syncMicFromStorage])
+
+  useEffect(() => {
+    const onFocus = () => {
+      const id = syncMicFromStorage()
+      if (id) void ensureReady().then(() => void audioEngine.enableMicrophone(id).catch(() => {}))
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [ensureReady, syncMicFromStorage])
 
   useEffect(() => {
     void ensureReady().then(() => bumpHornUi((n) => n + 1))
@@ -438,6 +490,92 @@ export function SirenControlPage() {
             </div>
           </section>
         ) : null}
+
+        <section className={sectionDividerClass}>
+          <h2 className={sectionTitleClass}>PA / Radio</h2>
+          <p className="mb-2 text-[11px] text-slate-500">
+            Press and hold to transmit. Configure input device in Settings.
+          </p>
+          <div className={zonePaClass}>
+            <button
+              type="button"
+              disabled={!selectedMicDeviceId}
+              className={clsx(
+                'relative flex w-full min-h-16 min-w-0 select-none items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left font-semibold tracking-normal transition-colors',
+                !selectedMicDeviceId &&
+                  'cursor-not-allowed border-slate-800 bg-slate-950/80 text-slate-500 opacity-50',
+                selectedMicDeviceId &&
+                  !micPttPressed &&
+                  'border-slate-700 bg-slate-900 text-slate-200 shadow-inner hover:border-slate-500 hover:bg-slate-900/95 active:scale-[0.98]',
+                selectedMicDeviceId &&
+                  micPttPressed &&
+                  'border-orange-500/80 bg-orange-950/50 text-orange-50 shadow-[inset_0_2px_4px_rgba(0,0,0,0.35),0_0_10px_rgba(251,146,60,0.35)] ring-2 ring-orange-400/60',
+              )}
+              aria-pressed={micPttPressed}
+              onPointerDown={(e) => {
+                if (!selectedMicDeviceId) return
+                void ensureReady()
+                micPttStillDownRef.current = true
+                setMicPttPressed(true)
+                try {
+                  e.currentTarget.setPointerCapture(e.pointerId)
+                } catch {
+                  /* ignore */
+                }
+                clearMicPttTimer()
+                micPttActivateTimerRef.current = window.setTimeout(() => {
+                  micPttActivateTimerRef.current = null
+                  if (micPttStillDownRef.current) {
+                    audioEngine.setMicrophoneActive(true)
+                  }
+                }, 80)
+              }}
+              onPointerUp={endMicPttHold}
+              onPointerCancel={endMicPttHold}
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <Mic
+                  className={clsx(
+                    'size-6 shrink-0',
+                    !selectedMicDeviceId
+                      ? 'text-slate-600'
+                      : micPttPressed
+                        ? 'text-orange-300'
+                        : 'text-slate-400',
+                  )}
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                <div className="flex min-w-0 flex-col items-start justify-center leading-tight">
+                  <span className="text-base">PA</span>
+                  {micPttPressed ? (
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-orange-200/95">
+                      TRANSMIT
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <span
+                className={clsx(
+                  'shrink-0 rounded-md border px-2 py-1 text-xs font-medium',
+                  !selectedMicDeviceId
+                    ? 'border-slate-700 bg-slate-900/50 text-slate-600'
+                    : micPttPressed
+                      ? 'border-orange-400/60 bg-orange-950/60 text-orange-100'
+                      : 'border-slate-500 bg-slate-900/80 text-slate-200',
+                )}
+                aria-hidden
+              >
+                HOLD
+              </span>
+            </button>
+            {!selectedMicDeviceId ? (
+              <p className="mt-2 text-[11px] text-slate-500" role="status">
+                No microphone selected
+              </p>
+            ) : null}
+          </div>
+        </section>
 
         <section className={sectionDividerClass}>
           <h2 className={sectionTitleClass}>System</h2>

@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PanelLayout } from '../components/PanelLayout'
 import { audioEngine } from '../audio/engine'
 import { useSirenStore } from '../store/sirenStore'
+import {
+  loadStoredAudioInputDeviceId,
+  saveStoredAudioInputDeviceId,
+} from '../utils/audioInputDeviceStorage'
 import { getSystemInfo, supportsSetSinkId } from '../utils/systemInfo'
 
 const STORAGE_KEY = 'audioOutputDeviceId'
@@ -32,6 +36,10 @@ export function SettingsPage() {
   const [permissionHint, setPermissionHint] = useState(false)
   const [tick, setTick] = useState(0)
 
+  const [inputs, setInputs] = useState<MediaDeviceInfo[]>([])
+  const [selectedInput, setSelectedInput] = useState(() => loadStoredAudioInputDeviceId() ?? '')
+  const [micError, setMicError] = useState<string | null>(null)
+
   const canSelectSink = supportsSetSinkId()
 
   const refreshDevices = useCallback(() => {
@@ -48,6 +56,31 @@ export function SettingsPage() {
       })
       .catch(() => setDevices([]))
   }, [])
+
+  const loadInputs = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      setInputs([])
+      return
+    }
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices()
+      setInputs(list.filter((d) => d.kind === 'audioinput'))
+    } catch {
+      setInputs([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadInputs()
+  }, [loadInputs])
+
+  useEffect(() => {
+    const md = navigator.mediaDevices
+    if (!md?.addEventListener) return undefined
+    const onChange = () => void loadInputs()
+    md.addEventListener('devicechange', onChange)
+    return () => md.removeEventListener('devicechange', onChange)
+  }, [loadInputs])
 
   useEffect(() => {
     refreshDevices()
@@ -98,6 +131,25 @@ export function SettingsPage() {
     }
     refreshDevices()
   }
+
+  const requestMicPermissionForInputs = async () => {
+    setMicError(null)
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true })
+      s.getTracks().forEach((t) => t.stop())
+      await loadInputs()
+    } catch {
+      setMicError('Microphone permission denied or unavailable.')
+    }
+  }
+
+  useEffect(() => {
+    const id = loadStoredAudioInputDeviceId()
+    if (!id) return
+    void ensureReady().then(() => {
+      void audioEngine.enableMicrophone(id).catch(() => {})
+    })
+  }, [ensureReady])
 
   const onSelectDevice = async (deviceId: string) => {
     setSinkError(null)
@@ -176,6 +228,67 @@ export function SettingsPage() {
               {sinkError ? <p className="mt-2 text-sm text-red-400">{sinkError}</p> : null}
             </>
           )}
+        </section>
+
+        <section>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Microphone</h2>
+          <p className="mb-2 text-sm text-slate-400">
+            Choose input for PA / radio (hold-to-talk on the siren screen). Grant permission once for device labels.
+          </p>
+          <div className="mb-2">
+            <button
+              type="button"
+              onClick={() => void requestMicPermissionForInputs()}
+              className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 hover:border-slate-500"
+            >
+              Allow microphone (labels)
+            </button>
+          </div>
+          <label htmlFor="audio-input-select" className="mb-1 block text-sm text-slate-400">
+            Input device
+          </label>
+          <select
+            id="audio-input-select"
+            className="mb-3 w-full rounded-xl border border-slate-600 bg-slate-900 px-3 py-2.5 text-base text-slate-100"
+            value={selectedInput}
+            onChange={(e) => {
+              const id = e.target.value
+              setSelectedInput(id)
+              saveStoredAudioInputDeviceId(id)
+              setMicError(null)
+              void (async () => {
+                try {
+                  await ensureReady()
+                  if (!id) {
+                    audioEngine.disableMicrophone()
+                    return
+                  }
+                  await audioEngine.enableMicrophone(id)
+                } catch (err) {
+                  setMicError(err instanceof Error ? err.message : 'Could not enable microphone')
+                }
+              })()
+            }}
+          >
+            <option value="">— Select microphone —</option>
+            {inputs.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label || 'Microphone'}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => {
+              audioEngine.disableMicrophone()
+              saveStoredAudioInputDeviceId('')
+              setSelectedInput('')
+            }}
+            className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 hover:border-slate-500"
+          >
+            Disable microphone
+          </button>
+          {micError ? <p className="mt-2 text-sm text-red-400">{micError}</p> : null}
         </section>
 
         <section>

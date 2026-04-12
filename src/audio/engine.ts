@@ -35,6 +35,7 @@ import { createWailUnified } from './sirens/wail'
 import { createYelpUnified } from './sirens/yelp'
 import { supportsSetSinkId } from '../utils/systemInfo'
 import { buildNoiseBuffer, getAssetUrl, getDbAtHz, measureRMS } from './utils/audioUtils'
+import { makeDistortionCurve } from './utils/distortion'
 
 const SAMPLE_EXTENSIONS = ['mp3', 'wav', 'ogg']
 
@@ -43,6 +44,9 @@ const PLAY_HEADROOM = 0.6
 /** Atténuation quand une autre voix joue déjà (mix plus propre). */
 const MULTI_VOICE_COMPENSATION = 0.75
 const MAX_SIMULTANEOUS_VOICES = 2
+
+/** `true` = micro → `micPreGain` → `micGain` (sans chaîne mégaphone), pour test qualité brute. */
+const BYPASS_MEGAPHONE = false
 
 class AudioEngine {
   private context?: AudioContext
@@ -80,6 +84,16 @@ class AudioEngine {
   /** Une fois le flux MediaStream → `<audio>` démarré, ne plus appliquer le warm-up muet. */
   private outputAudioWarmupComplete = false
 
+  private micStream?: MediaStream
+  private micSource?: MediaStreamAudioSourceNode
+  private micPreGain?: GainNode
+  private micGain?: GainNode
+  private megaphoneHPF?: BiquadFilterNode
+  private megaphoneLPF?: BiquadFilterNode
+  private megaphonePresence?: BiquadFilterNode
+  private megaphoneDistortion?: WaveShaperNode
+  private megaphoneCompressor?: DynamicsCompressorNode
+
   private sirenCtx(): SirenBuildContext {
     return {
       audioContext: this.context!,
@@ -98,7 +112,7 @@ class AudioEngine {
     let outputSampleRate: number | undefined
     if (typeof window !== 'undefined' && typeof AudioContext !== 'undefined') {
       try {
-        const probe = new AudioContext()
+        const probe = new AudioContext({ latencyHint: 'interactive' })
         outputSampleRate = probe.sampleRate
         await probe.close()
       } catch {
@@ -362,6 +376,141 @@ class AudioEngine {
 
   getAnalyser() {
     return this.analyser
+  }
+
+  /**
+   * Capture micro → (`BYPASS_MEGAPHONE` ? direct : mégaphone) → `micPreGain` → `micGain` → `mixGain`.
+   * Nécessite `getUserMedia` (geste utilisateur typique).
+   */
+  async enableMicrophone(deviceId?: string): Promise<void> {
+    if (!this.initialized) await this.init()
+    const ctx = this.context
+    const mix = this.mixGain
+    if (!ctx || !mix) throw new Error('Audio not initialized')
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('getUserMedia is not available')
+    }
+
+    this.disableMicrophone()
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        latency: 0,
+        channelCount: 1,
+      },
+    })
+
+    const source = ctx.createMediaStreamSource(stream)
+
+    const preGain = ctx.createGain()
+    preGain.gain.value = 3
+
+    const gain = ctx.createGain()
+    gain.gain.value = 0
+
+    if (BYPASS_MEGAPHONE) {
+      source.connect(preGain).connect(gain)
+      gain.connect(mix)
+      this.megaphoneHPF = undefined
+      this.megaphoneLPF = undefined
+      this.megaphonePresence = undefined
+      this.megaphoneDistortion = undefined
+      this.megaphoneCompressor = undefined
+    } else {
+      const hpf = ctx.createBiquadFilter()
+      hpf.type = 'highpass'
+      hpf.frequency.value = 200
+      hpf.Q.value = 0.7
+
+      const lpf = ctx.createBiquadFilter()
+      lpf.type = 'lowpass'
+      lpf.frequency.value = 4000
+      lpf.Q.value = 0.7
+
+      const presence = ctx.createBiquadFilter()
+      presence.type = 'peaking'
+      presence.frequency.value = 1500
+      presence.gain.value = 3
+      presence.Q.value = 1
+
+      const dist = ctx.createWaveShaper()
+      dist.curve = new Float32Array(makeDistortionCurve(2.8))
+      dist.oversample = '4x'
+
+      const comp = ctx.createDynamicsCompressor()
+      comp.threshold.value = -12
+      comp.ratio.value = 2
+      comp.attack.value = 0.01
+      comp.release.value = 0.15
+
+      source
+        .connect(hpf)
+        .connect(lpf)
+        .connect(presence)
+        .connect(dist)
+        .connect(comp)
+        .connect(preGain)
+        .connect(gain)
+      gain.connect(mix)
+
+      this.megaphoneHPF = hpf
+      this.megaphoneLPF = lpf
+      this.megaphonePresence = presence
+      this.megaphoneDistortion = dist
+      this.megaphoneCompressor = comp
+    }
+
+    this.micStream = stream
+    this.micSource = source
+    this.micPreGain = preGain
+    this.micGain = gain
+    this.logDebug(
+      `[mic] enabled (${BYPASS_MEGAPHONE ? 'bypass megaphone' : 'megaphone'})${deviceId ? ` device=${deviceId.slice(0, 12)}…` : ''}`,
+    )
+  }
+
+  disableMicrophone(): void {
+    const had = !!this.micStream
+    this.micStream?.getTracks().forEach((t) => t.stop())
+    this.micStream = undefined
+    const disconnectSafe = (n: AudioNode | undefined) => {
+      if (!n) return
+      try {
+        n.disconnect()
+      } catch {
+        /* ignore */
+      }
+    }
+    disconnectSafe(this.micSource)
+    disconnectSafe(this.megaphoneHPF)
+    disconnectSafe(this.megaphoneLPF)
+    disconnectSafe(this.megaphonePresence)
+    disconnectSafe(this.megaphoneDistortion)
+    disconnectSafe(this.megaphoneCompressor)
+    disconnectSafe(this.micPreGain)
+    disconnectSafe(this.micGain)
+    this.micSource = undefined
+    this.megaphoneHPF = undefined
+    this.megaphoneLPF = undefined
+    this.megaphonePresence = undefined
+    this.megaphoneDistortion = undefined
+    this.megaphoneCompressor = undefined
+    this.micPreGain = undefined
+    this.micGain = undefined
+    if (had) this.logDebug('[mic] disabled')
+  }
+
+  /** Monte ou coupe le micro dans le mix (ramp court sur `micGain`). */
+  setMicrophoneActive(enabled: boolean): void {
+    const ctx = this.context
+    const g = this.micGain
+    if (!ctx || !g) return
+    const now = ctx.currentTime
+    g.gain.setTargetAtTime(enabled ? 1 : 0, now, 0.02)
   }
 
   hasPoliceHorn(): boolean {
