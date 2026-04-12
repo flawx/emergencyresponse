@@ -25,9 +25,10 @@ export type MasterChain = {
 
 /**
  * Construit la chaîne master (saturation, compresseur, EQ, limiteur, analyseurs).
- * Branche `mixGain` → … → `destination` ; tap viz sur `finalLimiter` → `analyser`.
+ * Branche `mixGain` → … → `masterOutput` (ex. `MediaStreamDestination` ou `destination`) ;
+ * tap viz sur `finalLimiter` → `analyser`.
  */
-export function createMasterChain(ctx: AudioContext): MasterChain {
+export function createMasterChain(ctx: AudioContext, masterOutput: AudioNode): MasterChain {
   const mixGain = ctx.createGain()
   mixGain.gain.value = 1
   const saturatorInputGain = ctx.createGain()
@@ -84,7 +85,7 @@ export function createMasterChain(ctx: AudioContext): MasterChain {
   masterEqPresence.connect(masterEqHighShelf)
   masterEqHighShelf.connect(dcBlocker)
   dcBlocker.connect(finalLimiter)
-  finalLimiter.connect(ctx.destination)
+  finalLimiter.connect(masterOutput)
   finalLimiter.connect(analyser)
 
   return {

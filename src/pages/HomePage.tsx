@@ -1,6 +1,7 @@
 import { Globe, Globe2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { PanelLayout } from '../components/PanelLayout'
+import { SettingsNavButton } from '../components/SettingsNavButton'
 import { REGIONS } from '../utils/sirenConfig'
 
 const regionIconClass = 'h-4 w-4 shrink-0 opacity-80'
@@ -8,7 +9,12 @@ const regionIconClass = 'h-4 w-4 shrink-0 opacity-80'
 export function HomePage() {
   const navigate = useNavigate()
   return (
-    <PanelLayout title="Select region" subtitle="Emergency siren control console" showBack={false}>
+    <PanelLayout
+      title="Select region"
+      subtitle="Emergency siren control console"
+      showBack={false}
+      headerActions={<SettingsNavButton />}
+    >
       <div className="space-y-3">
         {REGIONS.map((region) => (
           <button

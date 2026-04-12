@@ -5,6 +5,8 @@ type Props = {
   title: string
   subtitle?: string
   showBack?: boolean
+  /** Actions à droite du titre (ex. lien Paramètres), avant le bouton retour. */
+  headerActions?: ReactNode
   children: ReactNode
 }
 
@@ -16,18 +18,21 @@ const panelShellClass = [
   'before:border-slate-700/50 before:content-[\'\']',
 ].join(' ')
 
-export function PanelLayout({ title, subtitle, showBack = true, children }: Props) {
+export function PanelLayout({ title, subtitle, showBack = true, headerActions, children }: Props) {
   return (
     <main className="relative z-10 min-h-screen text-slate-200">
       <div className="mx-auto flex min-h-screen w-full max-w-md flex-col p-4 pb-7">
         <div className={panelShellClass}>
           <div className="relative z-10 flex min-h-0 flex-1 flex-col p-4 pb-7">
-            <header className="mb-5 mt-1 flex items-start justify-between">
-              <div>
+            <header className="mb-5 mt-1 flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
                 <h1 className="text-xl font-semibold tracking-normal">{title}</h1>
                 {subtitle ? <p className="mt-1 text-sm text-slate-400">{subtitle}</p> : null}
               </div>
-              {showBack ? <BackButton /> : null}
+              <div className="flex shrink-0 items-start gap-2">
+                {headerActions}
+                {showBack ? <BackButton /> : null}
+              </div>
             </header>
             <section className="flex-1">{children}</section>
           </div>

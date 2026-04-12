@@ -33,6 +33,7 @@ import {
 } from './sirens/twoTone'
 import { createWailUnified } from './sirens/wail'
 import { createYelpUnified } from './sirens/yelp'
+import { supportsSetSinkId } from '../utils/systemInfo'
 import { buildNoiseBuffer, getAssetUrl, getDbAtHz, measureRMS } from './utils/audioUtils'
 
 const SAMPLE_EXTENSIONS = ['mp3', 'wav', 'ogg']
@@ -62,6 +63,8 @@ class AudioEngine {
   private frDebugIsolation = false
   private DEBUG_AUDIO = false
   private readonly loudnessTargetDb = -11
+  private mediaStreamDestination?: MediaStreamAudioDestinationNode
+  private outputAudioEl?: HTMLAudioElement
 
   private sirenCtx(): SirenBuildContext {
     return {
@@ -77,7 +80,16 @@ class AudioEngine {
     this.DEBUG_AUDIO =
       typeof window !== 'undefined' && window.location.search.includes('debugAudio=1')
     this.context = new AudioContext({ latencyHint: 'interactive' })
-    this.masterChain = createMasterChain(this.context)
+    this.mediaStreamDestination = this.context.createMediaStreamDestination()
+    this.masterChain = createMasterChain(this.context, this.mediaStreamDestination)
+    this.outputAudioEl = new Audio()
+    this.outputAudioEl.autoplay = true
+    this.outputAudioEl.setAttribute('playsinline', '')
+    this.outputAudioEl.srcObject = this.mediaStreamDestination.stream
+    this.outputAudioEl.style.display = 'none'
+    if (typeof document !== 'undefined') {
+      document.body.appendChild(this.outputAudioEl)
+    }
     this.mixGain = this.masterChain.mixGain
     this.masterGain = this.masterChain.masterGain
     this.analyser = this.masterChain.analyser
@@ -133,6 +145,45 @@ class AudioEngine {
   async resume() {
     if (!this.context) return
     if (this.context.state !== 'running') await this.context.resume()
+    await this.ensureOutputElementPlaying()
+  }
+
+  /** Lecture du flux master via `<audio>` (obligatoire lorsque la sortie passe par MediaStream). */
+  private async ensureOutputElementPlaying() {
+    const el = this.outputAudioEl
+    if (!el) return
+    try {
+      await el.play()
+    } catch {
+      // Autoplay bloqué jusqu’à une interaction utilisateur — `resume()` est appelé après gesture dans le store.
+    }
+  }
+
+  getAudioContext(): AudioContext | undefined {
+    return this.context
+  }
+
+  supportsAudioOutputSelection(): boolean {
+    return supportsSetSinkId()
+  }
+
+  async setOutputDevice(deviceId: string): Promise<void> {
+    if (!this.supportsAudioOutputSelection()) {
+      throw new Error('setSinkId is not supported in this browser')
+    }
+    const el = this.outputAudioEl
+    if (!el) throw new Error('Audio output not initialized')
+    await el.setSinkId(deviceId)
+  }
+
+  getOutputSinkId(): string {
+    const el = this.outputAudioEl
+    if (!el) return ''
+    try {
+      return el.sinkId ?? ''
+    } catch {
+      return ''
+    }
   }
 
   getAnalyser() {

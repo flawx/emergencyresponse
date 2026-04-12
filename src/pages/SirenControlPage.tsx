@@ -5,6 +5,7 @@ import { MasterLevelMeter } from '../components/audio/MasterLevelMeter'
 import { AudioDebugPanel } from '../components/AudioDebugPanel'
 import { AudioVisualizer } from '../components/AudioVisualizer'
 import { PanelLayout } from '../components/PanelLayout'
+import { SettingsNavButton } from '../components/SettingsNavButton'
 import { SirenButton } from '../components/SirenButton'
 import { VolumeSlider } from '../components/VolumeSlider'
 import { audioEngine } from '../audio/engine'
@@ -205,7 +206,11 @@ export function SirenControlPage() {
   }
 
   return (
-    <PanelLayout title="Select siren" subtitle={`${scenario.region.toUpperCase()} / ${scenario.emergency.toUpperCase()}`}>
+    <PanelLayout
+      title="Select siren"
+      subtitle={`${scenario.region.toUpperCase()} / ${scenario.emergency.toUpperCase()}`}
+      headerActions={<SettingsNavButton />}
+    >
       <div className="space-y-6">
         <section>
           <h2 className={sectionTitleClass}>SIRENS</h2>

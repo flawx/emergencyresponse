@@ -1,6 +1,7 @@
 import { Flame, Shield, Truck } from 'lucide-react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { PanelLayout } from '../components/PanelLayout'
+import { SettingsNavButton } from '../components/SettingsNavButton'
 import { EMERGENCIES, REGIONS, type EmergencyType, type Region } from '../utils/sirenConfig'
 
 const emergencyIconClass = 'h-4 w-4 shrink-0 opacity-80'
@@ -26,7 +27,11 @@ export function EmergencySelectPage() {
   if (!regionData) return <Navigate to="/" replace />
 
   return (
-    <PanelLayout title="Select emergency" subtitle={`${regionData.label} ${regionData.flag}`}>
+    <PanelLayout
+      title="Select emergency"
+      subtitle={`${regionData.label} ${regionData.flag}`}
+      headerActions={<SettingsNavButton />}
+    >
       <div className="space-y-3">
         {EMERGENCIES.map((emergency) => (
           <button

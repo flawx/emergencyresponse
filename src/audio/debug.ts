@@ -44,10 +44,10 @@ export function buildDebugSnapshot(
 
 export function logMasterDestinationRouting(logDebug: (message: string) => void): void {
   const routing = [
-    'Audio route: source -> mixGain -> preEQ(HP180) -> preGain -> saturator -> compressor -> makeupGain -> masterGain -> presenceEQ -> highShelf -> DCBlocker -> limiter -> destination',
-    'Analyzer (product): finalLimiter -> analyser (parallel, no destination)',
-    'Analyzer (debug): masterGain -> analyserDebugPreFinalEq (parallel, no destination)',
-    'Nodes connected to destination: finalLimiter only',
+    'Audio route: source -> mixGain -> preEQ(HP180) -> preGain -> saturator -> compressor -> makeupGain -> masterGain -> presenceEQ -> highShelf -> DCBlocker -> limiter -> masterOutput (MediaStreamDestination + HTMLAudioElement)',
+    'Analyzer (product): finalLimiter -> analyser (parallel, no extra sink)',
+    'Analyzer (debug): masterGain -> analyserDebugPreFinalEq (parallel, no extra sink)',
+    'Master sink: finalLimiter -> MediaStreamDestination; playback via <audio> (setSinkId when supported)',
   ]
   routing.forEach((line) => logDebug(`[routing] ${line}`))
 }
